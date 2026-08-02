@@ -1,0 +1,118 @@
+﻿<!DOCTYPE html>
+<html lang="de">
+<head>
+  <?php
+    $assetVersion = (string) max(
+      filemtime(__DIR__ . '/overview.css') ?: 0,
+      filemtime(__DIR__ . '/overview.js') ?: 0,
+      filemtime(__DIR__ . '/pwa.js') ?: 0,
+      filemtime(__DIR__ . '/service-worker.js') ?: 0,
+      filemtime(__DIR__ . '/manifest.webmanifest') ?: 0,
+      filemtime(__DIR__ . '/favicon-32.png') ?: 0,
+      filemtime(__DIR__ . '/apple-touch-icon.png') ?: 0
+    );
+  ?>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FITTRACK</title>
+  <meta name="application-name" content="FITTRACK" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="FITTRACK" />
+  <meta name="theme-color" content="#020817" />
+  <link rel="manifest" href="manifest.webmanifest?v=<?php echo urlencode($assetVersion); ?>" />
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=<?php echo urlencode($assetVersion); ?>" />
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=<?php echo urlencode($assetVersion); ?>" />
+  <link rel="stylesheet" href="overview.css?v=<?php echo urlencode($assetVersion); ?>" />
+</head>
+<body
+  data-csrf-token="<?php echo htmlspecialchars($csrfToken ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+  data-read-only="<?php echo !empty($isReadOnlyView) ? '1' : '0'; ?>"
+  data-share-token="<?php echo htmlspecialchars((string)($currentViewShareToken ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
+  data-asset-version="<?php echo htmlspecialchars($assetVersion, ENT_QUOTES, 'UTF-8'); ?>"
+>
+  <div class="top-strip">
+    <div class="top-strip-left">
+      <?php if (!empty($isReadOnlyView)): ?>
+        Deeplink-Ansicht von <strong><?php echo htmlspecialchars($currentViewUserNick ?? 'Unbekannt', ENT_QUOTES, 'UTF-8'); ?></strong>
+      <?php else: ?>
+        Angemeldet als <strong><?php echo htmlspecialchars($currentViewUserNick ?? ($_SESSION['nick'] ?? 'Unbekannt'), ENT_QUOTES, 'UTF-8'); ?></strong>
+      <?php endif; ?>
+    </div>
+    <div class="top-strip-actions">
+      <?php if (empty($isReadOnlyView)): ?>
+        <div class="top-strip-actions-wrap" id="deeplinkMenuWrap">
+          <button class="strip-btn" id="openDeeplinkMenu" type="button">Deeplinks</button>
+          <div class="deeplink-menu hidden" id="deeplinkMenu" role="dialog" aria-label="Deeplinks verwalten">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+              <strong>Deeplinks (nur Ansicht)</strong>
+              <button class="tiny-btn" id="closeDeeplinkMenu" type="button">Schliessen</button>
+            </div>
+            <form id="deeplinkCreateForm" class="form-grid">
+              <div class="field">
+                <label for="deeplinkExpiresAt">Ablaufdatum (optional)</label>
+                <input id="deeplinkExpiresAt" name="expiresAt" type="datetime-local" />
+              </div>
+              <div class="deeplink-actions">
+                <button class="btn-primary" type="submit">Neuen Deeplink erzeugen</button>
+              </div>
+            </form>
+            <div class="small" id="deeplinkNotice"></div>
+            <div class="deeplink-list" id="deeplinkList"></div>
+          </div>
+        </div>
+        <button class="strip-btn" id="openPasswordModal" type="button">Passwort ändern</button>
+        <form method="post" action="" style="margin:0;">
+          <input type="hidden" name="action" value="logout" />
+          <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken ?? '', ENT_QUOTES, 'UTF-8'); ?>" />
+          <button class="strip-btn logout-btn" type="submit">Logout</button>
+        </form>
+        <button class="strip-btn" id="sharePictureBtn" type="button">Share-Picture</button>
+      <?php else: ?>
+        <a class="strip-btn" href="index.php">Zum Login</a>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <?php if (!empty($password_change_success)): ?>
+    <div class="top-notice top-notice-success"><?php echo htmlspecialchars($password_change_success, ENT_QUOTES, 'UTF-8'); ?></div>
+  <?php endif; ?>
+
+  <?php if (!empty($password_change_error)): ?>
+    <div class="top-notice top-notice-error"><?php echo htmlspecialchars($password_change_error, ENT_QUOTES, 'UTF-8'); ?></div>
+  <?php endif; ?>
+
+  <div class="container" id="app"></div>
+
+  <section class="modal-backdrop hidden" id="passwordModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Passwort ändern">
+      <h3>Passwort ändern</h3>
+      <form method="post" action="" class="form-grid">
+        <input type="hidden" name="action" value="change_password" />
+        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken ?? '', ENT_QUOTES, 'UTF-8'); ?>" />
+        <div class="field">
+          <label for="currentPassword">Aktuelles Passwort</label>
+          <input id="currentPassword" name="current_password" type="password" required minlength="6" />
+        </div>
+        <div class="field">
+          <label for="newPassword">Neues Passwort</label>
+          <input id="newPassword" name="new_password" type="password" required minlength="6" />
+        </div>
+        <div class="field">
+          <label for="newPasswordConfirm">Neues Passwort wiederholen</label>
+          <input id="newPasswordConfirm" name="new_password_confirm" type="password" required minlength="6" />
+        </div>
+        <div class="toggle-row">
+          <button class="btn-primary" type="submit">Speichern</button>
+          <button class="btn-toggle" id="closePasswordModal" type="button">Abbrechen</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <script src="overview.js?v=<?php echo urlencode($assetVersion); ?>"></script>
+  <script src="pwa.js?v=<?php echo urlencode($assetVersion); ?>"></script>
+</body>
+</html>
+
+
