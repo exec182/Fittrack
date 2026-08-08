@@ -2363,13 +2363,35 @@
       const visible = getWindowedData();
       const dates = visible.dates || data.dates || [];
       const windowSize = dates.length || (data.dates || []).length;
-      const visibleTimestamps = dates
-        .map((value) => parseChartDateToTimestamp(value))
-        .filter((value) => Number.isFinite(value));
-      const hasWindowRange = visibleTimestamps.length > 0;
-      const windowStartTs = hasWindowRange ? Math.min(...visibleTimestamps) : NaN;
-      const windowEndTs = hasWindowRange ? Math.max(...visibleTimestamps) : NaN;
+      const windowDaysMap = {
+        '1 Woche': 7,
+        '2 Wochen': 14,
+        '3 Wochen': 21,
+        '1 Monat': 30,
+        '3 Monate': 90,
+        '1 Jahr': 365,
+        'Alles': null
+      };
+      const selectedDays = windowDaysMap[state.window];
       const rawMeasurementHistory = Array.isArray(data.measurementHistory) ? data.measurementHistory : [];
+
+      const knownTimestamps = [];
+      (Array.isArray(data.dates) ? data.dates : []).forEach((value) => {
+        const ts = parseChartDateToTimestamp(value);
+        if (Number.isFinite(ts)) knownTimestamps.push(ts);
+      });
+      rawMeasurementHistory.forEach((entry) => {
+        const historyDates = Array.isArray(entry?.dates) ? entry.dates : [];
+        historyDates.forEach((value) => {
+          const ts = parseChartDateToTimestamp(value);
+          if (Number.isFinite(ts)) knownTimestamps.push(ts);
+        });
+      });
+
+      const latestKnownTs = knownTimestamps.length > 0 ? Math.max(...knownTimestamps) : NaN;
+      const hasWindowRange = Number.isFinite(selectedDays) && selectedDays !== null && Number.isFinite(latestKnownTs);
+      const windowStartTs = hasWindowRange ? latestKnownTs - (selectedDays * 86400000) : NaN;
+      const windowEndTs = hasWindowRange ? latestKnownTs : NaN;
 
       const historyByTitle = new Map();
       rawMeasurementHistory.forEach((entry) => {
