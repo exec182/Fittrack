@@ -207,7 +207,7 @@
 
       <div class="form-group">
         <label for="password">Passwort</label>
-        <input id="password" name="password" type="password" placeholder="Passwort eingeben" required minlength="6" />
+        <input id="password" name="password" type="password" placeholder="Passwort eingeben" required />
       </div>
 
       <button type="submit">Anmelden</button>
@@ -240,7 +240,7 @@
 
         <div class="form-group">
           <label for="reg_password">Passwort</label>
-          <input id="reg_password" name="reg_password" type="password" placeholder="Passwort eingeben" required minlength="6" />
+          <input id="reg_password" name="reg_password" type="password" placeholder="Passwort eingeben" required minlength="12" />
         </div>
 
         <div class="form-group">
@@ -251,7 +251,7 @@
             type="password"
             placeholder="Passwort wiederholen"
             required
-            minlength="6"
+            minlength="12"
           />
         </div>
 
@@ -265,46 +265,7 @@
     <img src="Logo.png" alt="Diättool Logo in voller Größe" />
   </div>
 
-  <script>
-    (() => {
-      const preview = document.getElementById('logoPreview');
-      const lightbox = document.getElementById('logoLightbox');
-      const closeButton = document.getElementById('logoLightboxClose');
-
-      if (!preview || !lightbox || !closeButton) return;
-
-      const openLightbox = () => {
-        lightbox.classList.add('open');
-        lightbox.setAttribute('aria-hidden', 'false');
-      };
-
-      const closeLightbox = () => {
-        lightbox.classList.remove('open');
-        lightbox.setAttribute('aria-hidden', 'true');
-      };
-
-      preview.addEventListener('click', openLightbox);
-      preview.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          openLightbox();
-        }
-      });
-
-      closeButton.addEventListener('click', closeLightbox);
-      lightbox.addEventListener('click', (event) => {
-        if (event.target === lightbox) {
-          closeLightbox();
-        }
-      });
-
-      document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && lightbox.classList.contains('open')) {
-          closeLightbox();
-        }
-      });
-    })();
-  </script>
+  <script src="login.js?v=<?php echo urlencode((string)(filemtime(__DIR__ . '/login.js') ?: 0)); ?>"></script>
   <script src="pwa.js?v=<?php echo urlencode($assetVersion); ?>"></script>
 </body>
 </html>

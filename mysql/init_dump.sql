@@ -50,7 +50,7 @@ CREATE TABLE `deeplink_access` (
 
 LOCK TABLES `deeplink_access` WRITE;
 /*!40000 ALTER TABLE `deeplink_access` DISABLE KEYS */;
-INSERT INTO `deeplink_access` VALUES (1,5,'JUnfQjGB-Pq9OfKTKCtbHunNETWQT7Vo','2026-07-31 19:41:26',NULL,NULL),(2,6,'P3T61Ehz5cVLKKhcZuqizMAnmrVxWH19','2026-07-31 19:41:41',NULL,'2026-07-31 19:41:41'),(3,2,'VXPYpNQNB9VH5x6ApgSUb2ojQ1tMyAZN','2026-07-31 19:42:32',NULL,NULL);
+-- Zugangstokens werden aus Sicherheitsgruenden nicht als Seed-Daten exportiert.
 /*!40000 ALTER TABLE `deeplink_access` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -262,7 +262,7 @@ CREATE TABLE `user` (
 
 LOCK TABLES `user` WRITE;
 /*!40000 ALTER TABLE `user` DISABLE KEYS */;
-INSERT INTO `user` VALUES (1,'testuser_20260731202234','$argon2id$v=19$m=65536,t=4,p=1$aXlvNXVSRUw1ZmNYYUpTUQ$ixq6taks4qq7Dik3Zwf/SPrMcaFdBeFcrAQheKueTq0',NULL,NULL),(2,'exec','$argon2id$v=19$m=65536,t=4,p=1$aU5oRXBEYklzekJZMEc4UQ$9+AcGLoWB/6eDm69U1QTxeSk6+/wublYEKgYWsPaILY',80,1.82),(3,'csrf_test_212946','$argon2id$v=19$m=65536,t=4,p=1$M2EuZ1J0QXJBOHByOVN6Wg$KzAss4fOazL+c6fH/oEaJAIEgl/7PCGrUx+DYCa/bfA',95,1.78),(4,'deeplink_user_214026','$argon2id$v=19$m=65536,t=4,p=1$SkxPdEsyblNOOFhoR0guQg$eGeDx9LVu4ZKwppLXX1etAYo6vzAd6yRQ4EuL0AJS6E',NULL,NULL),(5,'deeplink_user_214125','$argon2id$v=19$m=65536,t=4,p=1$REs3UWV2VmZ0ZXRkUHMwRg$3q1EcNHq+Z2UblqwLijXaK9xKuYmLaCniasU288zCjo',NULL,NULL),(6,'deeplink_disable_214141','$argon2id$v=19$m=65536,t=4,p=1$UnU4dUouYkh6VUtpYkNwag$5o63Ihcv69yAtG9oIxqSg8nuTAaWPlrDaJ2+HDNkJHQ',NULL,NULL);
+INSERT INTO `user` VALUES (1,'demo_user','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL),(2,'demo_exec','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',80,1.82),(3,'demo_csrf','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',95,1.78),(4,'demo_share_1','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL),(5,'demo_share_2','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL),(6,'demo_share_3','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL);
 /*!40000 ALTER TABLE `user` ENABLE KEYS */;
 UNLOCK TABLES;
 

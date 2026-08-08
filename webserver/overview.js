@@ -71,7 +71,12 @@
     };
 
     const app = document.getElementById('app');
-    let data = JSON.parse(JSON.stringify(fallbackData));
+    let data = {
+      source: 'loading', heightM: null, goalWeight: null, weights: [], dates: [],
+      measurements: [], measurementHistory: [], measurementTypes: [],
+      latestMeasurementEntries: [], goals: [], deeplinks: [], trainingPlan: [],
+      recentTrainingEntries: []
+    };
     const IS_READ_ONLY_VIEW = document.body.getAttribute('data-read-only') === '1';
     const SHARE_TOKEN = document.body.getAttribute('data-share-token') || '';
 
@@ -144,8 +149,8 @@
               <strong>Link #${Number(item.id)}</strong>
               <span class="status-pill ${statusClass}">${statusLabel}</span>
             </div>
-            <div class="small">Erstellt: ${formatDeeplinkDate(item.createdAt)}</div>
-            <div class="small">Ablauf: ${formatDeeplinkDate(item.expiresAt)}</div>
+            <div class="small">Erstellt: ${escapeHtml(formatDeeplinkDate(item.createdAt))}</div>
+            <div class="small">Ablauf: ${escapeHtml(formatDeeplinkDate(item.expiresAt))}</div>
             <div class="deeplink-actions">
               <button class="tiny-btn" type="button" data-copy-deeplink="${escapeHtml(String(item.token || ''))}">Link kopieren</button>
               ${canDisable ? `<button class="tiny-btn warn" type="button" data-disable-deeplink="${Number(item.id)}">Deaktivieren</button>` : ''}
@@ -230,7 +235,7 @@
       if (!state.hasLoadedServerData || !isFallbackSource()) return null;
       const banner = document.createElement('section');
       banner.className = 'data-source-banner';
-      banner.textContent = 'Hinweis: Es werden Defaultdaten angezeigt, weil aktuell keine Daten aus der Datenbank geladen wurden.';
+      banner.textContent = 'Die Daten konnten nicht geladen werden. Es werden keine Ersatzdaten angezeigt.';
       return banner;
     }
 
@@ -1323,13 +1328,63 @@
       return 'Adipositas Grad III';
     }
 
+    function renderProfileEditorMarkup(resolvedHeightM) {
+      if (IS_READ_ONLY_VIEW) return '';
+      return `
+        <button class="profile-edit-toggle" id="profileToggleBtn" type="button">Änderungen eintragen</button>
+        <div class="profile-editor" id="profileEditorPanel" style="display:${state.showProfileEditor ? 'block' : 'none'};">
+          <h3>Zielwerte</h3>
+          <form id="profileForm">
+            <div class="profile-editor-grid">
+              <div class="field"><label for="goalWeightInput">Zielgewicht (kg)</label><input id="goalWeightInput" name="goalWeight" type="number" min="1" step="0.1" value="${Number.isFinite(Number(data.goalWeight)) && Number(data.goalWeight) > 0 ? Number(data.goalWeight).toFixed(1) : ''}" /></div>
+              <div class="field"><label for="heightMInput">Körpergröße (m)</label><input id="heightMInput" name="heightM" type="number" min="1" max="2.6" step="0.01" value="${resolvedHeightM.toFixed(2)}" required /></div>
+            </div>
+            <div class="profile-editor-actions"><button class="btn-primary" type="submit">Speichern</button>${state.profileNotice ? `<span class="profile-notice">${escapeHtml(state.profileNotice)}</span>` : ''}</div>
+          </form>
+        </div>`;
+    }
+
+    function bindProfileEditor(block) {
+      block.querySelector('#profileToggleBtn')?.addEventListener('click', () => {
+        state.showProfileEditor = !state.showProfileEditor;
+        renderAll();
+      });
+      const profileForm = block.querySelector('#profileForm');
+      profileForm?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(profileForm);
+        try {
+          const response = await fetch(buildDataApiUrl(), jsonPostOptions({
+            action: 'save_profile',
+            goalWeight: String(formData.get('goalWeight') || '').trim(),
+            heightM: String(formData.get('heightM') || '').trim()
+          }));
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          state.profileNotice = 'Zielwerte gespeichert.';
+          state.showProfileEditor = false;
+          await loadDashboardData();
+        } catch (error) {
+          window.alert(`Speichern fehlgeschlagen: ${error.message}`);
+        }
+      });
+    }
+
     function renderOverview() {
       const block = document.createElement('section');
       block.className = 'block';
 
+      if (!Array.isArray(data.weights) || data.weights.length === 0) {
+        const rawHeight = Number(data.heightM ?? data.heightCm);
+        const resolvedHeightM = Number.isFinite(rawHeight) && rawHeight > 0 ? (rawHeight > 3 ? rawHeight / 100 : rawHeight) : 1.75;
+        block.innerHTML = `<h2>Übersicht</h2><div class="small">Noch keine Gewichtsmessungen vorhanden.</div>${renderProfileEditorMarkup(resolvedHeightM)}`;
+        bindProfileEditor(block);
+        return block;
+      }
+
       const visible = getWindowedData();
-      const allWeights = Array.isArray(data.weights) && data.weights.length > 0 ? data.weights : fallbackData.weights;
-      const allDates = Array.isArray(data.dates) && data.dates.length > 0 ? data.dates : fallbackData.dates;
+      const allWeights = data.weights;
+      const allDates = Array.isArray(data.dates) ? data.dates : [];
       const startWeight = Number(allWeights[0]);
       const currentWeight = Number(allWeights[allWeights.length - 1]);
       const firstWeightInWindow = Number(visible.weights[0]);
@@ -1361,10 +1416,10 @@
 
       const overallDurationText = `${overallDurationParts.join(' ')} (${overallDays} Tage)`;
 
-      const rawHeight = Number(data.heightM ?? data.heightCm ?? fallbackData.heightM);
+      const rawHeight = Number(data.heightM ?? data.heightCm);
       const resolvedHeightM = Number.isFinite(rawHeight) && rawHeight > 0
         ? (rawHeight > 3 ? rawHeight / 100 : rawHeight)
-        : Number(fallbackData.heightM);
+        : 1.75;
       const bmi = currentWeight / (resolvedHeightM ** 2);
       const bmiCategory = getBmiCategory(bmi);
       const maintenanceCalories = Math.round(22 * currentWeight);
@@ -1456,59 +1511,9 @@
             </div>
           `).join('')}
         </div>
-        ${IS_READ_ONLY_VIEW ? '' : '<button class="profile-edit-toggle" id="profileToggleBtn" type="button">Änderungen eintragen</button>'}
-        <div class="profile-editor" id="profileEditorPanel" style="display:${!IS_READ_ONLY_VIEW && state.showProfileEditor ? 'block' : 'none'};">
-          <h3>Zielwerte</h3>
-          <form id="profileForm">
-            <div class="profile-editor-grid">
-              <div class="field">
-                <label for="goalWeightInput">Zielgewicht (kg)</label>
-                <input id="goalWeightInput" name="goalWeight" type="number" min="1" step="0.1" value="${Number.isFinite(Number(data.goalWeight)) && Number(data.goalWeight) > 0 ? Number(data.goalWeight).toFixed(1) : ''}" />
-              </div>
-              <div class="field">
-                <label for="heightMInput">Körpergröße (m)</label>
-                <input id="heightMInput" name="heightM" type="number" min="1" max="2.6" step="0.01" value="${resolvedHeightM.toFixed(2)}" required />
-              </div>
-            </div>
-            <div class="profile-editor-actions">
-              <button class="btn-primary" type="submit">Speichern</button>
-              ${state.profileNotice ? `<span class="profile-notice">${state.profileNotice}</span>` : ''}
-            </div>
-          </form>
-        </div>
+        ${renderProfileEditorMarkup(resolvedHeightM)}
       `;
-
-      const profileToggleBtn = block.querySelector('#profileToggleBtn');
-      profileToggleBtn?.addEventListener('click', () => {
-        state.showProfileEditor = !state.showProfileEditor;
-        renderAll();
-      });
-
-      const profileForm = block.querySelector('#profileForm');
-      profileForm?.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const formData = new FormData(profileForm);
-
-        const payload = {
-          action: 'save_profile',
-          goalWeight: String(formData.get('goalWeight') || '').trim(),
-          heightM: String(formData.get('heightM') || '').trim()
-        };
-
-        try {
-          const response = await fetch(buildDataApiUrl(), jsonPostOptions(payload));
-          const result = await response.json();
-          if (!response.ok || !result.ok) {
-            throw new Error(result.error || `HTTP ${response.status}`);
-          }
-
-          state.profileNotice = 'Zielwerte gespeichert.';
-          state.showProfileEditor = false;
-          await loadDashboardData();
-        } catch (error) {
-          window.alert(`Speichern fehlgeschlagen: ${error.message}`);
-        }
-      });
+      bindProfileEditor(block);
 
       return block;
     }
@@ -2594,14 +2599,14 @@
           ${fallbackPlanGroups.map((group) => `
             <div class="plan-card ${group.day === todayName ? 'today' : ''}">
               <div class="day-row">
-                <div class="day">${group.day}</div>
+                <div class="day">${escapeHtml(group.day)}</div>
                 ${group.day === todayName ? '<span class="today-pill">Heute</span>' : ''}
               </div>
               <div class="plan-entry-list">
                 ${group.entries.map((entry) => `
                   <div class="plan-entry-item">
-                    <div class="meta">${entry.focus} • ${entry.duration}</div>
-                    <div class="small">${entry.note}</div>
+                    <div class="meta">${escapeHtml(entry.focus)} • ${escapeHtml(entry.duration)}</div>
+                    <div class="small">${escapeHtml(entry.note).replace(/\n/g, '<br />')}</div>
                     ${!IS_READ_ONLY_VIEW && group.day === todayName ? `<button class="mini-btn" data-apply-training-entry="${entry.id}" type="button">Training übernehmen</button>` : ''}
                   </div>
                 `).join('')}
@@ -3049,11 +3054,8 @@
             unitBadge.textContent = selectedType?.unit || '-';
           }
 
-          const currentRaw = String(valueInput?.value || '').replace(',', '.');
-          const currentValue = Number(currentRaw);
-          const shouldAutofill = currentRaw.trim() === '' || (Number.isFinite(currentValue) && currentValue === 0);
-          if (shouldAutofill && Number.isFinite(latestValue) && valueInput) {
-            valueInput.value = String(latestValue);
+          if (valueInput) {
+            valueInput.value = Number.isFinite(latestValue) ? String(latestValue) : '';
           }
 
           const existingEntry = (state.measurementForm.entries || [])[index] || {};
@@ -3062,7 +3064,8 @@
               ...existingEntry,
               typeId: selectedTypeId,
               typeName: selectedType?.name || existingEntry.typeName || '',
-              unit: selectedType?.unit || existingEntry.unit || ''
+              unit: selectedType?.unit || existingEntry.unit || '',
+              value: Number.isFinite(latestValue) ? latestValue : ''
             };
           }
         });
@@ -3232,7 +3235,7 @@
               </select>
             </div>
             <div class="field">
-              <label for="goalTargetValue">Zielwert ${unit ? `(${escapeHtml(unit)})` : ''}</label>
+              <label id="goalTargetLabel" for="goalTargetValue">Zielwert ${unit ? `(${escapeHtml(unit)})` : ''}</label>
               <input id="goalTargetValue" name="targetValue" type="number" min="0.1" step="0.1" required value="${escapeHtml(String(state.goalForm.targetValue || ''))}" />
             </div>
             <div class="field">
@@ -3252,6 +3255,14 @@
       });
 
       overlay.querySelector('#cancelGoalEditor')?.addEventListener('click', () => closeGoalEditor());
+
+      overlay.querySelector('#goalTypeId')?.addEventListener('change', (event) => {
+        const typeId = Number(event.currentTarget.value || 0);
+        const type = measurementTypes.find((item) => Number(item.id) === typeId);
+        const selectedUnit = String(type?.unit || '').trim();
+        const label = overlay.querySelector('#goalTargetLabel');
+        if (label) label.textContent = `Zielwert${selectedUnit ? ` (${selectedUnit})` : ''}`;
+      });
 
       overlay.querySelector('#goalEditorForm')?.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -3342,14 +3353,11 @@
 
           state.knownAchievedGoalIds = nextAchievedIds;
 
-          data = {
-            ...fallbackData,
-            ...payload,
-            overview: fallbackData.overview
-          };
+          data = payload;
         }
       } catch (error) {
-        console.warn('Using fallback dashboard data:', error);
+        console.warn('Dashboard data could not be loaded:', error);
+        data.source = 'error';
       } finally {
         state.hasLoadedServerData = true;
         renderAll();
@@ -3373,9 +3381,15 @@
       combo.appendChild(renderWindowSelector());
       app.appendChild(combo);
 
-      app.appendChild(renderChart());
-      app.appendChild(renderRateChart());
-      app.appendChild(renderMeasurements());
+      if (Array.isArray(data.weights) && data.weights.length > 0) {
+        app.appendChild(renderChart());
+      }
+      if (Array.isArray(data.weights) && data.weights.length > 1) {
+        app.appendChild(renderRateChart());
+      }
+      if (Array.isArray(data.measurements) && data.measurements.length > 0) {
+        app.appendChild(renderMeasurements());
+      }
       app.appendChild(renderTrainingPlan());
       app.appendChild(renderRecentTrainingEntriesBlock());
       app.appendChild(renderGoalsHistoryBlock());

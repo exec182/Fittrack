@@ -1,33 +1,18 @@
 <?php
-$isHttps = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => $isHttps,
-    'httponly' => true,
-    'samesite' => 'Lax'
-]);
-session_start();
+declare(strict_types=1);
+require_once __DIR__ . '/bootstrap.php';
 
 $appConfig = require __DIR__ . '/app_config.php';
 $allowUserRegistration = !empty($appConfig['allow_user_registration']);
 
-if (empty($_SESSION['csrf_token'])) {
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-}
-
-$csrfToken = $_SESSION['csrf_token'];
-
-function isValidCsrfToken(string $token): bool {
-    return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
-}
+$csrfToken = ensureCsrfToken();
 
 // Datenbankzugang wie in data.php: erst ENV, dann Fallback.
-$dbHost = getenv('MYSQL_HOST') ?: (getenv('DB_HOST') ?: 'mysql');
-$dbUser = getenv('MYSQL_USER') ?: (getenv('DB_USER') ?: 'diattool_user');
-$dbPass = getenv('MYSQL_PASSWORD') ?: (getenv('DB_PASS') ?: 'diattool_pass');
-$dbName = getenv('MYSQL_DATABASE') ?: (getenv('DB_NAME') ?: 'diattool_db');
+$dbConfig = databaseConfig();
+$dbHost = $dbConfig['host'];
+$dbUser = $dbConfig['user'];
+$dbPass = $dbConfig['pass'];
+$dbName = $dbConfig['name'];
 
 // Datenbank Verbindung
 $dsn = "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4";
@@ -75,7 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
     $csrfTokenInput = (string)($_POST['csrf_token'] ?? '');
 
-    if (!isValidCsrfToken($csrfTokenInput)) {
+    if (!validCsrfToken($csrfTokenInput)) {
         http_response_code(403);
         $login_error = 'Sicherheitspruefung fehlgeschlagen. Bitte Seite neu laden.';
         $register_error = 'Sicherheitspruefung fehlgeschlagen. Bitte Seite neu laden.';
@@ -109,8 +94,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             exit;
         }
 
-        if (strlen($newPassword) < 6) {
-            $_SESSION['password_change_error'] = 'Neues Passwort muss mindestens 6 Zeichen haben.';
+        if (strlen($newPassword) < 12) {
+            $_SESSION['password_change_error'] = 'Neues Passwort muss mindestens 12 Zeichen haben.';
             header('Location: ' . $_SERVER['PHP_SELF']);
             exit;
         }
@@ -140,6 +125,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 
     if ($action === 'login') {
+        $rateLimit = loginRateLimitState();
+        if ($rateLimit['blockedUntil'] > time()) {
+            http_response_code(429);
+            $login_error = 'Zu viele Anmeldeversuche. Bitte in einigen Minuten erneut versuchen.';
+        } else {
         $nick = $_POST['nick'] ?? '';
         $password = $_POST['password'] ?? '';
         
@@ -148,13 +138,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $user = $stmt->fetch();
         
         if ($user && password_verify($password, $user['password'])) {
+            clearLoginFailures();
             session_regenerate_id(true);
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['nick'] = $nick;
             header('Location: ' . $_SERVER['PHP_SELF']);
             exit;
         } else {
+            recordLoginFailure();
             $login_error = 'Nick oder Passwort ungültig';
+        }
         }
     }
     elseif ($action === 'register') {
@@ -168,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         
         if ($password !== $password_confirm) {
             $register_error = 'Passwörter stimmen nicht überein';
-        } elseif (strlen($nick) < 3 || strlen($password) < 6) {
+        } elseif (strlen($nick) < 3 || strlen($password) < 12) {
             $register_error = 'Nick min. 3 Zeichen, Passwort min. 6 Zeichen';
         } else {
             $hashed_password = password_hash($password, PASSWORD_ARGON2ID);
