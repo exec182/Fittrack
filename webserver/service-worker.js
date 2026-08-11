@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'fittrack-static-v2';
+const STATIC_CACHE = 'fittrack-static-v3';
 const STATIC_ASSETS = [
   './overview.css',
   './overview.js',

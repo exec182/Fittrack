@@ -1,14 +1,6 @@
 <?php
-$isHttps = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => $isHttps,
-    'httponly' => true,
-    'samesite' => 'Lax'
-]);
-session_start();
+declare(strict_types=1);
+require_once __DIR__ . '/bootstrap.php';
 ini_set('display_errors', '0');
 ini_set('html_errors', '0');
 header('Content-Type: application/json; charset=utf-8');
@@ -61,6 +53,27 @@ function outputJson(array $payload): void {
     echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 }
 
+function isValidDate(string $value): bool {
+    $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+    return $date !== false && $date->format('Y-m-d') === $value;
+}
+
+function isValidTime(string $value): bool {
+    $time = DateTimeImmutable::createFromFormat('!H:i', $value);
+    return $time !== false && $time->format('H:i') === $value;
+}
+
+function parsePositiveFloat(mixed $raw, float $maximum = 1000.0): ?float {
+    $normalized = str_replace(',', '.', trim((string)$raw));
+    if ($normalized === '' || !is_numeric($normalized)) return null;
+    $value = (float)$normalized;
+    return is_finite($value) && $value > 0 && $value <= $maximum ? $value : null;
+}
+
+function isAllowedWeekday(string $value): bool {
+    return in_array($value, ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'], true);
+}
+
 function buildUserSharePictureDir(int $userId): string {
     return __DIR__
         . DIRECTORY_SEPARATOR . 'share_pictures'
@@ -111,10 +124,6 @@ function findActiveDeeplinkOwner(mysqli $mysqli, string $token): ?array {
         'userId' => (int)$row['user_id'],
         'nick' => (string)$row['nick']
     ];
-}
-
-function isValidCsrfToken(string $token): bool {
-    return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
 function normalizeMeasurementKey(string $value): string {
@@ -264,6 +273,12 @@ function ensureTrainingEntryTable(mysqli $mysqli): void {
         }
     }
 
+    if (!doesColumnExist($mysqli, 'training_entry', 'duration_minutes')) {
+        if (!$mysqli->query('ALTER TABLE `training_entry` ADD COLUMN `duration_minutes` SMALLINT UNSIGNED NULL AFTER `duration_text`')) {
+            throw new RuntimeException('Konnte duration_minutes nicht anlegen: ' . $mysqli->error);
+        }
+    }
+
     if (!doesIndexExist($mysqli, 'training_entry', 'idx_training_source_plan_entry')) {
         if (!$mysqli->query('ALTER TABLE `training_entry` ADD KEY `idx_training_source_plan_entry` (`source_plan_entry_id`)')) {
             throw new RuntimeException('Konnte Index fuer source_plan_entry_id nicht anlegen: ' . $mysqli->error);
@@ -277,10 +292,29 @@ function ensureTrainingEntryTable(mysqli $mysqli): void {
     }
 }
 
-$dbHost = getenv('MYSQL_HOST') ?: (getenv('DB_HOST') ?: 'mysql');
-$dbUser = getenv('MYSQL_USER') ?: (getenv('DB_USER') ?: 'diattool_user');
-$dbPass = getenv('MYSQL_PASSWORD') ?: (getenv('DB_PASS') ?: 'diattool_pass');
-$dbName = getenv('MYSQL_DATABASE') ?: (getenv('DB_NAME') ?: 'diattool_db');
+function ensureAnalysisSchema(mysqli $mysqli): void {
+    ensureTrainingEntryTable($mysqli);
+    foreach (['birthdate' => 'DATE NULL', 'gender' => 'VARCHAR(20) NULL', 'onboarding_completed_at' => 'DATETIME NULL'] as $column => $definition) {
+        if (!doesColumnExist($mysqli, 'user', $column) && !$mysqli->query("ALTER TABLE `user` ADD COLUMN `$column` $definition")) {
+            throw new RuntimeException('Konnte Profilfeld nicht anlegen: ' . $mysqli->error);
+        }
+    }
+    $sql = "CREATE TABLE IF NOT EXISTS `training_exception` (
+        `id` INT NOT NULL AUTO_INCREMENT, `user_id` INT NOT NULL,
+        `date_from` DATE NOT NULL, `date_to` DATE NOT NULL,
+        `reason_code` VARCHAR(30) NOT NULL, `note_text` VARCHAR(255) NULL,
+        `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (`id`), KEY `idx_exception_user_dates` (`user_id`, `date_from`, `date_to`),
+        CONSTRAINT `fk_training_exception_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci";
+    if (!$mysqli->query($sql)) throw new RuntimeException('Konnte training_exception nicht vorbereiten: ' . $mysqli->error);
+}
+
+$dbConfig = databaseConfig();
+$dbHost = $dbConfig['host'];
+$dbUser = $dbConfig['user'];
+$dbPass = $dbConfig['pass'];
+$dbName = $dbConfig['name'];
 
 $isReadOnlyShare = false;
 $shareToken = normalizeDeeplinkToken((string)($_GET['share'] ?? ''));
@@ -318,7 +352,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $csrfToken = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
-    if (!isValidCsrfToken($csrfToken)) {
+    if (!validCsrfToken($csrfToken)) {
         http_response_code(403);
         outputJson(['ok' => false, 'error' => 'Sicherheitspruefung fehlgeschlagen']);
         exit;
@@ -328,10 +362,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input = json_decode($rawBody, true);
     $action = is_array($input) ? ($input['action'] ?? '') : '';
 
-    if (!is_array($input) || !in_array($action, ['save_training', 'save_training_plan', 'save_measurement', 'save_profile', 'save_goal_reward', 'create_goal', 'update_goal', 'delete_goal', 'create_deeplink', 'disable_deeplink', 'save_share_picture'], true)) {
+    if (!is_array($input) || !in_array($action, ['save_training', 'save_training_plan', 'save_measurement', 'save_profile', 'save_goal_reward', 'create_goal', 'update_goal', 'delete_goal', 'create_deeplink', 'disable_deeplink', 'save_share_picture', 'save_training_exception', 'delete_training_exception'], true)) {
         http_response_code(400);
         outputJson(['ok' => false, 'error' => 'Ungueltige Anfrage']);
         exit;
+    }
+
+    if ($action === 'save_training_exception' || $action === 'delete_training_exception') {
+        try {
+            $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
+            $mysqli->set_charset('utf8mb4');
+            ensureAnalysisSchema($mysqli);
+
+            if ($action === 'delete_training_exception') {
+                $exceptionId = (int)($input['exceptionId'] ?? 0);
+                if ($exceptionId <= 0) throw new InvalidArgumentException('Ungueltige Ausnahme');
+                $stmt = $mysqli->prepare('DELETE FROM training_exception WHERE id = ? AND user_id = ?');
+                $stmt->bind_param('ii', $exceptionId, $userId);
+                $stmt->execute();
+                outputJson(['ok' => true]);
+                exit;
+            }
+
+            $dateFrom = trim((string)($input['dateFrom'] ?? ''));
+            $dateTo = trim((string)($input['dateTo'] ?? ''));
+            $reason = trim((string)($input['reason'] ?? ''));
+            $note = trim((string)($input['note'] ?? ''));
+            if (!isValidDate($dateFrom) || !isValidDate($dateTo) || $dateTo < $dateFrom
+                || !in_array($reason, ['illness', 'pain_pause', 'vacation', 'other'], true) || strlen($note) > 255) {
+                throw new InvalidArgumentException('Ausnahmezeitraum ist ungueltig');
+            }
+            $stmt = $mysqli->prepare("INSERT INTO training_exception (user_id, date_from, date_to, reason_code, note_text) VALUES (?, ?, ?, ?, NULLIF(?, ''))");
+            $stmt->bind_param('issss', $userId, $dateFrom, $dateTo, $reason, $note);
+            $stmt->execute();
+            outputJson(['ok' => true, 'id' => $stmt->insert_id]);
+            exit;
+        } catch (InvalidArgumentException $e) {
+            http_response_code(422);
+            outputJson(['ok' => false, 'error' => $e->getMessage()]);
+            exit;
+        } catch (Throwable $e) {
+            http_response_code(500);
+            outputJson(['ok' => false, 'error' => 'Trainingsausnahme konnte nicht verarbeitet werden']);
+            exit;
+        }
     }
 
     if ($action === 'save_share_picture') {
@@ -351,8 +425,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $binary = base64_decode(substr($imageData, strlen($prefix)), true);
-        if ($binary === false) {
+        $encoded = substr($imageData, strlen($prefix));
+        if (strlen($encoded) > 8_000_000) {
+            http_response_code(413);
+            outputJson(['ok' => false, 'error' => 'Bild ist zu gross']);
+            exit;
+        }
+        $binary = base64_decode($encoded, true);
+        $imageInfo = $binary === false ? false : @getimagesizefromstring($binary);
+        if ($binary === false || strlen($binary) > 6_000_000 || $imageInfo === false || ($imageInfo['mime'] ?? '') !== 'image/png') {
             http_response_code(422);
             outputJson(['ok' => false, 'error' => 'Bild konnte nicht decodiert werden']);
             exit;
@@ -371,8 +452,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
+        $filename = date('Y-m-d') . '_' . bin2hex(random_bytes(12)) . '.png';
         $targetPath = $targetDir . DIRECTORY_SEPARATOR . $filename;
-        if (@file_put_contents($targetPath, $binary) === false) {
+        if (@file_put_contents($targetPath, $binary, LOCK_EX) === false) {
             http_response_code(500);
             outputJson(['ok' => false, 'error' => 'Bild konnte nicht gespeichert werden']);
             exit;
@@ -637,7 +719,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $durationText = trim((string)($entry['duration'] ?? ''));
             $noteText = trim((string)($entry['note'] ?? ''));
 
-            if ($weekdayName === '' || $focusText === '' || $durationText === '' || $noteText === '') {
+            if (!isAllowedWeekday($weekdayName) || $focusText === '' || $durationText === '' || $noteText === ''
+                || strlen($focusText) > 320 || strlen($durationText) > 100 || strlen($noteText) > 10000) {
                 continue;
             }
 
@@ -708,6 +791,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'ok' => true,
                 'message' => 'Trainingsplan gespeichert'
             ]);
+            exit;
+        } catch (InvalidArgumentException $e) {
+            if (isset($mysqli) && $mysqli instanceof mysqli) $mysqli->rollback();
+            http_response_code(422);
+            outputJson(['ok' => false, 'error' => $e->getMessage()]);
             exit;
         } catch (Throwable $e) {
             if (isset($mysqli) && $mysqli instanceof mysqli) {
@@ -941,13 +1029,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $measurementTime = trim((string)($input['time'] ?? ''));
         $entries = $input['entries'] ?? [];
 
-        if ($measurementDate === '' || !is_array($entries) || count($entries) === 0) {
+        if (!isValidDate($measurementDate) || !is_array($entries) || count($entries) === 0 || count($entries) > 50) {
             http_response_code(422);
             outputJson(['ok' => false, 'error' => 'Bitte Datum und mindestens einen Messwert ausfuellen']);
             exit;
         }
 
-        if ($measurementTime === '' || !preg_match('/^\d{2}:\d{2}$/', $measurementTime)) {
+        if (!isValidTime($measurementTime)) {
             $measurementTime = date('H:i');
         }
 
@@ -986,19 +1074,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $savedEntries = [];
 
+            $seenTypeIds = [];
             foreach ($entries as $entry) {
                 $typeId = (int)($entry['typeId'] ?? 0);
-                $value = (float)str_replace(',', '.', (string)($entry['value'] ?? '0'));
+                $value = parsePositiveFloat($entry['value'] ?? null);
 
-                if ($typeId <= 0) {
-                    continue;
+                if ($typeId <= 0 || $value === null || isset($seenTypeIds[$typeId])) {
+                    throw new InvalidArgumentException('Ungueltiger oder doppelter Messwert');
                 }
+                $seenTypeIds[$typeId] = true;
 
                 $checkTypeStmt->bind_param('i', $typeId);
                 $checkTypeStmt->execute();
                 $typeResult = $checkTypeStmt->get_result();
                 if (!$typeResult || $typeResult->num_rows === 0) {
-                    continue;
+                    throw new InvalidArgumentException('Unbekannter Messwerttyp');
                 }
 
                 $insertValueStmt->bind_param('iid', $measureId, $typeId, $value);
@@ -1039,6 +1129,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'message' => 'Messung gespeichert'
             ]);
             exit;
+        } catch (InvalidArgumentException $e) {
+            if (isset($mysqli) && $mysqli instanceof mysqli) $mysqli->rollback();
+            http_response_code(422);
+            outputJson(['ok' => false, 'error' => $e->getMessage()]);
+            exit;
         } catch (Throwable $e) {
             if (isset($mysqli) && $mysqli instanceof mysqli) {
                 $mysqli->rollback();
@@ -1055,13 +1150,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $trainingDate = trim((string)($input['date'] ?? ''));
     $trainingText = trim((string)($input['trainingText'] ?? ''));
     $duration = trim((string)($input['duration'] ?? ''));
+    $durationMinutes = (int)($input['durationMinutes'] ?? 0);
+    if ($durationMinutes <= 0 && preg_match('/^(\d{1,2}):(\d{2})$/', $duration, $durationParts)) {
+        $durationMinutes = ((int)$durationParts[1] * 60) + (int)$durationParts[2];
+    }
+    if ($durationMinutes <= 0 && preg_match('/(\d+)/', $duration, $durationNumber)) {
+        $durationMinutes = (int)$durationNumber[1];
+    }
+    if ($durationMinutes > 0 && $durationMinutes < 1440) {
+        $duration = sprintf('%02d:%02d', intdiv($durationMinutes, 60), $durationMinutes % 60);
+    }
     $limitation = trim((string)($input['limitation'] ?? ''));
     $loadLevel = (int)($input['loadLevel'] ?? 3);
     $painLevel = (int)($input['painLevel'] ?? 1);
     $sourceDay = trim((string)($input['sourceDay'] ?? ''));
     $sourcePlanEntryId = (int)($input['sourcePlanEntryId'] ?? 0);
 
-    if ($trainingDate === '' || $trainingText === '' || $duration === '') {
+    if (!isValidDate($trainingDate) || $trainingText === '' || $duration === ''
+        || strlen($trainingText) > 10000 || strlen($duration) > 100 || strlen($limitation) > 10000
+        || $loadLevel < 1 || $loadLevel > 5 || $painLevel < 1 || $painLevel > 5
+        || $durationMinutes < 1 || $durationMinutes >= 1440
+        || ($sourceDay !== '' && !isAllowedWeekday($sourceDay))) {
         http_response_code(422);
         outputJson(['ok' => false, 'error' => 'Bitte Datum, Trainingstext und Dauer ausfuellen']);
         exit;
@@ -1071,6 +1180,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
         $mysqli->set_charset('utf8mb4');
         ensureTrainingEntryTable($mysqli);
+
+        if ($sourcePlanEntryId > 0) {
+            $ownerStmt = $mysqli->prepare('SELECT id, weekday_name FROM `training_plan_entry` WHERE id = ? AND user_id = ? LIMIT 1');
+            $ownerStmt->bind_param('ii', $sourcePlanEntryId, $userId);
+            $ownerStmt->execute();
+            $ownerResult = $ownerStmt->get_result();
+            $ownedPlan = $ownerResult ? $ownerResult->fetch_assoc() : null;
+            if (!$ownedPlan) {
+                http_response_code(422);
+                outputJson(['ok' => false, 'error' => 'Trainingsplan-Eintrag ist ungueltig']);
+                exit;
+            }
+            $sourceDay = (string)$ownedPlan['weekday_name'];
+        }
 
         if ($sourcePlanEntryId <= 0 && $sourceDay !== '') {
             $planLookupStmt = $mysqli->prepare(
@@ -1096,8 +1219,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $insertStmt = $mysqli->prepare(
             "INSERT INTO `training_entry`
-            (`user_id`, `training_date`, `training_text`, `duration_text`, `limitation_text`, `load_level`, `pain_level`, `source_plan_day`, `source_plan_entry_id`)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, 0))"
+            (`user_id`, `training_date`, `training_text`, `duration_text`, `duration_minutes`, `limitation_text`, `load_level`, `pain_level`, `source_plan_day`, `source_plan_entry_id`)
+            VALUES (?, ?, ?, ?, NULLIF(?, 0), ?, ?, ?, ?, NULLIF(?, 0))"
         );
 
         if (!$insertStmt) {
@@ -1105,11 +1228,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $insertStmt->bind_param(
-            'issssiisi',
+            'isssisiisi',
             $userId,
             $trainingDate,
             $trainingText,
             $duration,
+            $durationMinutes,
             $limitation,
             $loadLevel,
             $painLevel,
@@ -1140,9 +1264,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 try {
     $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
     $mysqli->set_charset('utf8mb4');
-    ensureTrainingEntryTable($mysqli);
+    ensureAnalysisSchema($mysqli);
 
-    $goalStmt = $mysqli->prepare("SELECT goalweight, height FROM `user` WHERE id = ? LIMIT 1");
+    $goalStmt = $mysqli->prepare("SELECT goalweight, height, birthdate, gender FROM `user` WHERE id = ? LIMIT 1");
     $goalStmt->bind_param('i', $userId);
     $goalStmt->execute();
     $goalResult = $goalStmt->get_result();
@@ -1232,12 +1356,30 @@ try {
         $trainingPlanEntries = buildDefaultTrainingPlanEntries($defaultData['trainingPlan'], $userId);
     }
 
+    $trainingPlanHistory = [];
+    $historyPlanStmt = $mysqli->prepare(
+        "SELECT id, weekday_name, focus_text, duration_text, note_text, valid_from, deactivated_at
+         FROM training_plan_entry WHERE user_id = ? ORDER BY valid_from ASC, id ASC"
+    );
+    $historyPlanStmt->bind_param('i', $userId);
+    $historyPlanStmt->execute();
+    $historyPlanResult = $historyPlanStmt->get_result();
+    while ($historyPlanResult && ($row = $historyPlanResult->fetch_assoc())) {
+        $trainingPlanHistory[] = [
+            'id' => (int)$row['id'], 'day' => (string)$row['weekday_name'],
+            'focus' => (string)$row['focus_text'], 'duration' => (string)$row['duration_text'],
+            'note' => (string)$row['note_text'], 'validFrom' => (string)$row['valid_from'],
+            'deactivatedAt' => $row['deactivated_at']
+        ];
+    }
+
     $recentTrainingEntries = [];
     $trainingHistoryStmt = $mysqli->prepare(
         "SELECT te.id,
             DATE_FORMAT(te.training_date, '%Y-%m-%d') AS training_date,
             te.training_text,
             te.duration_text,
+            te.duration_minutes,
             te.limitation_text,
             te.load_level,
             te.pain_level,
@@ -1250,10 +1392,11 @@ try {
                 plan.note_text AS plan_note,
                 plan.valid_from AS plan_valid_from
          FROM `training_entry` te
-         LEFT JOIN `training_plan_entry` plan ON plan.id = te.`source_plan_entry_id`
+         LEFT JOIN `training_plan_entry` plan
+           ON plan.id = te.`source_plan_entry_id`
+          AND plan.user_id = te.user_id
          WHERE te.user_id = ?
-         ORDER BY te.training_date DESC, te.created_at DESC, te.id DESC
-         LIMIT 12"
+         ORDER BY te.training_date DESC, te.created_at DESC, te.id DESC"
     );
     if ($trainingHistoryStmt) {
         $trainingHistoryStmt->bind_param('i', $userId);
@@ -1266,6 +1409,7 @@ try {
                     'date' => (string)$trainingRow['training_date'],
                     'trainingText' => (string)$trainingRow['training_text'],
                     'duration' => (string)$trainingRow['duration_text'],
+                    'durationMinutes' => isset($trainingRow['duration_minutes']) ? (int)$trainingRow['duration_minutes'] : 0,
                     'limitation' => trim((string)($trainingRow['limitation_text'] ?? '')),
                     'loadLevel' => (int)$trainingRow['load_level'],
                     'painLevel' => (int)$trainingRow['pain_level'],
@@ -1280,6 +1424,25 @@ try {
                 ];
             }
         }
+    }
+
+    $trainingExceptions = [];
+    $exceptionStmt = $mysqli->prepare(
+        'SELECT id, date_from, date_to, reason_code, note_text, created_at
+         FROM training_exception WHERE user_id = ? ORDER BY date_from DESC, id DESC'
+    );
+    $exceptionStmt->bind_param('i', $userId);
+    $exceptionStmt->execute();
+    $exceptionResult = $exceptionStmt->get_result();
+    while ($exceptionResult && ($row = $exceptionResult->fetch_assoc())) {
+        $trainingExceptions[] = [
+            'id' => (int)$row['id'],
+            'dateFrom' => (string)$row['date_from'],
+            'dateTo' => (string)$row['date_to'],
+            'reason' => (string)$row['reason_code'],
+            'note' => trim((string)($row['note_text'] ?? '')),
+            'createdAt' => (string)$row['created_at']
+        ];
     }
 
     $deeplinkRows = [];
@@ -1474,23 +1637,27 @@ try {
     outputJson([
         'heightM' => $resolvedHeight,
         'goalWeight' => $goalRow['goalweight'] ?? null,
-        'weights' => !empty($weights) ? $weights : $defaultData['weights'],
-        'dates' => !empty($dates) ? $dates : $defaultData['dates'],
-        'measurements' => !empty($measurements) ? $measurements : $defaultData['measurements'],
+        'birthdate' => $goalRow['birthdate'] ?? null,
+        'gender' => $goalRow['gender'] ?? null,
+        'weights' => $weights,
+        'dates' => $dates,
+        'measurements' => $measurements,
         'measurementHistory' => $measurementHistory,
-        'measurementTypes' => !empty($measurementTypes) ? $measurementTypes : $defaultData['measurementTypes'],
-        'latestMeasurementEntries' => !empty($latestEntries) ? $latestEntries : $defaultData['latestMeasurementEntries'],
+        'measurementTypes' => $measurementTypes,
+        'latestMeasurementEntries' => $latestEntries,
         'goals' => $goals,
         'deeplinks' => $deeplinkRows,
         'readOnly' => $isReadOnlyShare,
         'viewerNick' => $viewerNick,
         'trainingPlan' => $trainingPlanEntries,
-        'recentTrainingEntries' => !empty($recentTrainingEntries) ? $recentTrainingEntries : $defaultData['recentTrainingEntries'],
+        'trainingPlanHistory' => $trainingPlanHistory,
+        'recentTrainingEntries' => $recentTrainingEntries,
+        'trainingExceptions' => $trainingExceptions,
         'source' => 'database'
     ]);
     exit;
 } catch (Throwable $e) {
-    // If the database is unavailable or the schema does not match, we use the demo payload.
+    error_log('Dashboard load failed: ' . $e->getMessage());
+    http_response_code(500);
+    outputJson(['ok' => false, 'error' => 'Daten konnten nicht geladen werden']);
 }
-
-outputJson($defaultData);

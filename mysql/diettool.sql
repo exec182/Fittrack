@@ -95,7 +95,11 @@ CREATE TABLE `user` (
   `id` int(11) NOT NULL COMMENT 'Primärschlüssel',
   `nick` varchar(50) NOT NULL COMMENT 'Benutzername',
   `password` varchar(255) NOT NULL COMMENT 'Passwort zur Anmeldung',
-  `goalweight` double DEFAULT NULL COMMENT 'Wunschgewicht'
+  `goalweight` double DEFAULT NULL COMMENT 'Wunschgewicht',
+  `height` double DEFAULT NULL,
+  `birthdate` date DEFAULT NULL,
+  `gender` varchar(20) DEFAULT NULL,
+  `onboarding_completed_at` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

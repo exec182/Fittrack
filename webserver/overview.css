@@ -245,6 +245,103 @@
       box-shadow: 0 4px 12px var(--shadow);
     }
 
+    .analysis-head, .analysis-controls, .exception-form, .exception-list > div {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .analysis-controls select, .analysis-controls button, .exception-form input, .exception-form select {
+      min-height: 38px;
+    }
+
+    .analysis-a4 { display: grid; gap: 14px; }
+    .analysis-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+    .analysis-kpis > div { background: var(--soft); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    .analysis-kpis span { display: block; color: var(--muted); font-size: .76rem; }
+    .analysis-kpis strong { display: block; margin-top: 5px; font-size: 1.2rem; }
+    .analysis-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; }
+    .analysis-secondary-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; }
+    .analysis-chart-card, .analysis-text-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--soft); }
+    .analysis-calendar-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--soft); }
+    .analysis-chart-card svg { width: 100%; height: 180px; }
+    .analysis-load-card svg { height: 150px; }
+    .analysis-chart-legend, .calendar-legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: .75rem; }
+    .analysis-chart-legend span, .calendar-legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .analysis-chart-legend i { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+    .analysis-chart-legend .load { background: #f59e0b; }
+    .analysis-chart-legend .pain, .calendar-legend .red { background: #ef4444; }
+    .calendar-legend .green { background: #22c55e; }
+    .calendar-legend .blue { background: #3b82f6; }
+    .calendar-legend .gray { background: #94a3b8; }
+    .calendar-title { font-weight: 800; margin-bottom: 8px; text-transform: capitalize; }
+    .training-calendars { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
+    .calendar-weekdays, .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+    .calendar-weekdays span { text-align: center; color: var(--muted); font-size: .7rem; font-weight: 800; }
+    .calendar-day { min-height: 28px; display: flex; align-items: center; justify-content: center; font-size: .72rem; }
+    .calendar-day.empty { visibility: hidden; }
+    .calendar-day.out-of-range { visibility: hidden; }
+    .calendar-day span { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 999px; }
+    .calendar-day .day-circle { width: 23px; height: 23px; overflow: visible; }
+    .day-circle text { fill: #fff; font-size: 8px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
+    .calendar-marker-outline { fill: none; stroke: rgba(255,255,255,.32); stroke-width: .6; }
+    .calendar-marker-print { display: none; }
+    .calendar-legend .day-circle { width: 11px; height: 11px; flex: 0 0 11px; }
+    .calendar-legend .day-circle text, .calendar-legend .calendar-marker-outline { display: none; }
+    .calendar-legend { margin-top: 7px; }
+    .analysis-text-card ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+    .analysis-substats, .analysis-excused, .analysis-disclaimer { color: var(--muted); font-size: .82rem; }
+    .analysis-disclaimer { border-top: 1px solid var(--border); padding-top: 9px; }
+    .analysis-generated { border-top: 1px solid var(--border); padding-top: 7px; color: var(--muted); font-size: .78rem; text-align: right; font-weight: 700; }
+    .analysis-exceptions { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+    .analysis-exceptions summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+    .exception-form { justify-content: flex-start; align-items: end; }
+    .exception-form label { display: grid; gap: 5px; font-size: .8rem; color: var(--muted); }
+    .exception-list { margin-top: 12px; display: grid; gap: 6px; }
+    .exception-list > div { background: var(--soft); padding: 8px 10px; border-radius: 8px; }
+    .exception-list button { border: 0; background: #fee2e2; color: #991b1b; border-radius: 6px; padding: 5px 8px; cursor: pointer; }
+    .motivation-toast { position: fixed; left: 50%; top: 18px; transform: translate(-50%, -140%); z-index: 3000; width: min(92vw, 520px); padding: 14px 18px; border-radius: 14px; background: #eff6ff; color: #1e3a8a; border: 1px solid #93c5fd; box-shadow: 0 16px 40px rgba(15,23,42,.22); display: grid; gap: 4px; transition: transform .3s ease; }
+    .motivation-toast.visible { transform: translate(-50%, 0); }
+
+    @media (max-width: 900px) {
+      .analysis-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .analysis-grid { grid-template-columns: 1fr; }
+      .analysis-secondary-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) { .motivation-toast { transition: none; } }
+
+    @media print {
+      @page { size: A4 landscape; margin: 9mm; }
+      body { background: #fff !important; padding: 0 !important; color: #111827 !important; }
+      body > *:not(#app), body #app > *:not(.analysis-report), body .no-print { display: none !important; }
+      body #app { display: block !important; width: 100% !important; }
+      body .analysis-report { display: block !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+      body .analysis-a4 { gap: 3mm; }
+      body .analysis-kpis { grid-template-columns: repeat(6, 1fr); gap: 2mm; }
+      body .analysis-kpis > div { padding: 2.5mm; break-inside: avoid; }
+      body .analysis-grid { grid-template-columns: 1.1fr .9fr; gap: 3mm; }
+      body .analysis-secondary-grid { grid-template-columns: 1.1fr .9fr; gap: 3mm; }
+      body .analysis-chart-card, body .analysis-text-card { padding: 3mm; break-inside: avoid; background: #f8fafc !important; }
+      body .analysis-calendar-card { padding: 3mm; break-inside: avoid; background: #f8fafc !important; }
+      body .analysis-chart-card svg { height: 43mm; }
+      body .analysis-load-card svg { height: 30mm; }
+      body .calendar-day { min-height: 5.5mm; font-size: 7pt; }
+      body .calendar-day span, body .calendar-day .day-circle { width: 4.8mm; height: 4.8mm; }
+      body .calendar-marker-color { display: none; }
+      body .calendar-marker-print { display: inline; }
+      body .calendar-marker-outline { stroke: #111; stroke-width: .8; }
+      body .day-circle text { fill: #111; font-size: 8px; }
+      body .calendar-legend .day-circle { width: 2.8mm; height: 2.8mm; }
+      body .training-calendars { grid-template-columns: repeat(3, 1fr); gap: 2mm; }
+      body h2 { font-size: 18pt; margin-bottom: 2mm; }
+      body h3 { font-size: 10pt; margin-bottom: 2mm; }
+      body .analysis-text-card li { font-size: 8.5pt; line-height: 1.25; }
+      body .analysis-disclaimer, body .analysis-excused, body .analysis-generated { font-size: 7.5pt; }
+    }
+
     h2, h3 {
       margin: 0 0 14px;
     }
