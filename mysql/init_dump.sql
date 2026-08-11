@@ -124,6 +124,7 @@ CREATE TABLE `training_entry` (
   `training_date` date NOT NULL,
   `training_text` text COLLATE utf8mb4_general_ci NOT NULL,
   `duration_text` varchar(50) COLLATE utf8mb4_general_ci NOT NULL,
+  `duration_minutes` smallint unsigned DEFAULT NULL,
   `limitation_text` text COLLATE utf8mb4_general_ci DEFAULT NULL,
   `load_level` tinyint NOT NULL,
   `pain_level` tinyint NOT NULL,
@@ -135,6 +136,23 @@ CREATE TABLE `training_entry` (
   KEY `idx_training_source_plan_entry` (`source_plan_entry_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `training_exception`
+--
+
+DROP TABLE IF EXISTS `training_exception`;
+CREATE TABLE `training_exception` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `date_from` date NOT NULL,
+  `date_to` date NOT NULL,
+  `reason_code` varchar(30) COLLATE utf8mb4_general_ci NOT NULL,
+  `note_text` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_exception_user_dates` (`user_id`,`date_from`,`date_to`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `training_entry`
@@ -252,6 +270,9 @@ CREATE TABLE `user` (
   `password` varchar(255) COLLATE utf8mb4_general_ci NOT NULL COMMENT 'Passwort zur Anmeldung',
   `goalweight` double DEFAULT NULL COMMENT 'Wunschgewicht',
   `height` double DEFAULT NULL,
+  `birthdate` date DEFAULT NULL,
+  `gender` varchar(20) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `onboarding_completed_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -262,7 +283,7 @@ CREATE TABLE `user` (
 
 LOCK TABLES `user` WRITE;
 /*!40000 ALTER TABLE `user` DISABLE KEYS */;
-INSERT INTO `user` VALUES (1,'demo_user','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL),(2,'demo_exec','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',80,1.82),(3,'demo_csrf','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',95,1.78),(4,'demo_share_1','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL),(5,'demo_share_2','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL),(6,'demo_share_3','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL);
+INSERT INTO `user` VALUES (1,'demo_user','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL,NULL,NULL,NULL),(2,'demo_exec','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',80,1.82,NULL,NULL,NULL),(3,'demo_csrf','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',95,1.78,NULL,NULL,NULL),(4,'demo_share_1','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL,NULL,NULL,NULL),(5,'demo_share_2','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL,NULL,NULL,NULL),(6,'demo_share_3','LOGIN_DISABLED_CREATE_A_NEW_PASSWORD',NULL,NULL,NULL,NULL,NULL);
 /*!40000 ALTER TABLE `user` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -272,6 +293,9 @@ ALTER TABLE `training_plan_entry`
 ALTER TABLE `training_entry`
   ADD CONSTRAINT `fk_training_entry_plan` FOREIGN KEY (`source_plan_entry_id`) REFERENCES `training_plan_entry` (`id`) ON DELETE SET NULL,
   ADD CONSTRAINT `fk_training_entry_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE;
+
+ALTER TABLE `training_exception`
+  ADD CONSTRAINT `fk_training_exception_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;

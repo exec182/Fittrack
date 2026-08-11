@@ -21,6 +21,24 @@ $db = new PDO($dsn, $dbUser, $dbPass, [
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
 ]);
 
+// Keep existing installations compatible with the extended onboarding fields.
+foreach (['height' => 'DOUBLE NULL', 'birthdate' => 'DATE NULL', 'gender' => 'VARCHAR(20) NULL', 'onboarding_completed_at' => 'DATETIME NULL'] as $column => $definition) {
+    $columnStmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = \'user\' AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $columnStmt->execute([$column]);
+    if (!$columnStmt->fetchColumn()) {
+        $db->exec("ALTER TABLE `user` ADD COLUMN `$column` $definition");
+    }
+}
+
+$registrationMeasurementTypes = $db->query(
+    "SELECT id, messurement, unit FROM messuretype
+     WHERE LOWER(TRIM(messurement)) NOT IN ('gewicht', 'weight', 'bodyweight', 'body_weight', 'kg')
+     ORDER BY messurement"
+)->fetchAll();
+
 $isSharedView = false;
 $sharedUserId = null;
 $sharedNick = null;
@@ -158,25 +176,106 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $nick = $_POST['reg_nick'] ?? '';
         $password = $_POST['reg_password'] ?? '';
         $password_confirm = $_POST['reg_password_confirm'] ?? '';
+        $startWeight = filter_var(str_replace(',', '.', (string)($_POST['reg_start_weight'] ?? '')), FILTER_VALIDATE_FLOAT);
+        $goalWeight = filter_var(str_replace(',', '.', (string)($_POST['reg_goal_weight'] ?? '')), FILTER_VALIDATE_FLOAT);
+        $heightCm = filter_var(str_replace(',', '.', (string)($_POST['reg_height_cm'] ?? '')), FILTER_VALIDATE_FLOAT);
+        $birthdate = trim((string)($_POST['reg_birthdate'] ?? ''));
+        $gender = trim((string)($_POST['reg_gender'] ?? ''));
+        $birthdateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $birthdate);
         
         if ($password !== $password_confirm) {
             $register_error = 'Passwörter stimmen nicht überein';
         } elseif (strlen($nick) < 3 || strlen($password) < 12) {
-            $register_error = 'Nick min. 3 Zeichen, Passwort min. 6 Zeichen';
+            $register_error = 'Nick min. 3 Zeichen, Passwort min. 12 Zeichen';
+        } elseif ($startWeight === false || $startWeight < 20 || $startWeight > 500) {
+            $register_error = 'Bitte ein gültiges Startgewicht zwischen 20 und 500 kg angeben.';
+        } elseif ($goalWeight === false || $goalWeight < 20 || $goalWeight >= $startWeight) {
+            $register_error = 'Das Zielgewicht muss mindestens 20 kg und kleiner als das Startgewicht sein.';
+        } elseif ($heightCm === false || $heightCm < 100 || $heightCm > 260) {
+            $register_error = 'Bitte eine gültige Körpergröße zwischen 100 und 260 cm angeben.';
+        } elseif (!$birthdateObject || $birthdateObject->format('Y-m-d') !== $birthdate || $birthdateObject > new DateTimeImmutable('today')) {
+            $register_error = 'Bitte ein gültiges Geburtsdatum angeben.';
+        } elseif (!in_array($gender, ['female', 'male', 'diverse', 'unspecified'], true)) {
+            $register_error = 'Bitte eine gültige Geschlechtsangabe auswählen.';
         } else {
             $hashed_password = password_hash($password, PASSWORD_ARGON2ID);
             
             try {
-                $stmt = $db->prepare('INSERT INTO user (nick, password) VALUES (?, ?)');
-                $stmt->execute([$nick, $hashed_password]);
+                $db->beginTransaction();
+                $heightM = ((float)$heightCm) / 100;
+                $stmt = $db->prepare(
+                    'INSERT INTO user (nick, password, goalweight, height, birthdate, gender, onboarding_completed_at)
+                     VALUES (?, ?, ?, ?, ?, ?, NOW())'
+                );
+                $stmt->execute([$nick, $hashed_password, $goalWeight, $heightM, $birthdate, $gender]);
+                $newUserId = (int)$db->lastInsertId();
+
+                $weightTypeStmt = $db->query(
+                    "SELECT id FROM messuretype WHERE LOWER(TRIM(messurement)) IN ('gewicht','weight','bodyweight','body_weight','kg') LIMIT 1"
+                );
+                $weightTypeId = (int)($weightTypeStmt->fetchColumn() ?: 0);
+                if ($weightTypeId <= 0) {
+                    throw new RuntimeException('Messwerttyp Gewicht fehlt.');
+                }
+
+                $measureStmt = $db->prepare('INSERT INTO messure (`user-id`, `datetime`, notes, official) VALUES (?, NOW(), ?, b\'1\')');
+                $measureStmt->execute([$newUserId, 'Startmessung aus der Registrierung']);
+                $measurementId = (int)$db->lastInsertId();
+                $valueStmt = $db->prepare('INSERT INTO messurevalue (`messure-id`, `type-id`, value) VALUES (?, ?, ?)');
+                $valueStmt->execute([$measurementId, $weightTypeId, $startWeight]);
+
+                $automaticGoals = [];
+                for ($value = floor(((float)$startWeight - 0.001) / 5) * 5; $value > (float)$goalWeight; $value -= 5) {
+                    $automaticGoals[] = [(float)$value, 'Zwischenziel: ' . number_format((float)$value, 1, ',', '.') . ' kg'];
+                }
+                for ($boundary = floor(((float)$startWeight - 0.001) / 50) * 50; $boundary > (float)$goalWeight; $boundary -= 50) {
+                    $automaticGoals[] = [$boundary - 0.1, 'Unter ' . number_format($boundary, 0, ',', '.') . ' kg'];
+                }
+                $automaticGoals[] = [(float)$goalWeight, 'Persönliches Wunschgewicht'];
+                $age = $birthdateObject->diff(new DateTimeImmutable('today'))->y;
+                $bmiOrientationWeight = round(24.9 * $heightM * $heightM, 1);
+                if ($age >= 18 && $bmiOrientationWeight < (float)$startWeight) {
+                    $automaticGoals[] = [$bmiOrientationWeight, 'BMI-Orientierungswert (keine medizinische Empfehlung)'];
+                }
+
+                usort($automaticGoals, static fn(array $a, array $b): int => $b[0] <=> $a[0]);
+                $goalStmt = $db->prepare(
+                    'INSERT INTO goals (`user-id`, messuretype_id, `messure-value`, goalname, createdat)
+                     VALUES (?, ?, ?, ?, NOW())'
+                );
+                $seenWeightTargets = [];
+                foreach ($automaticGoals as [$target, $label]) {
+                    $key = number_format((float)$target, 1, '.', '');
+                    if (isset($seenWeightTargets[$key])) continue;
+                    $seenWeightTargets[$key] = true;
+                    $goalStmt->execute([$newUserId, $weightTypeId, $target, mb_substr($label, 0, 50)]);
+                }
+
+                $selectedTypes = array_map('intval', (array)($_POST['reg_goal_type'] ?? []));
+                $targetValues = (array)($_POST['reg_goal_value'] ?? []);
+                $allowedTypes = array_column($registrationMeasurementTypes, null, 'id');
+                foreach ($selectedTypes as $typeId) {
+                    if (!isset($allowedTypes[$typeId])) continue;
+                    $target = filter_var(str_replace(',', '.', (string)($targetValues[$typeId] ?? '')), FILTER_VALIDATE_FLOAT);
+                    if ($target === false || $target <= 0 || $target > 1000) continue;
+                    $type = $allowedTypes[$typeId];
+                    $label = 'Ziel ' . (string)$type['messurement'];
+                    $goalStmt->execute([$newUserId, $typeId, $target, mb_substr($label, 0, 50)]);
+                }
+
+                $db->commit();
                 
                 session_regenerate_id(true);
-                $_SESSION['user_id'] = $db->lastInsertId();
+                $_SESSION['user_id'] = $newUserId;
                 $_SESSION['nick'] = $nick;
                 header('Location: ' . $_SERVER['PHP_SELF']);
                 exit;
             } catch (PDOException $e) {
+                if ($db->inTransaction()) $db->rollBack();
                 $register_error = 'Nick existiert bereits';
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $register_error = 'Registrierung konnte nicht abgeschlossen werden.';
             }
         }
         }
@@ -187,6 +286,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 // Session prüfen
 if (isset($_SESSION['user_id']) || $isSharedView) {
     $isReadOnlyView = $isSharedView;
+    $currentPage = (!$isSharedView && ($_GET['page'] ?? '') === 'analysis') ? 'analysis' : 'overview';
     $currentViewUserNick = $isSharedView ? $sharedNick : ($_SESSION['nick'] ?? 'Unbekannt');
     $currentViewShareToken = $isSharedView ? $shareToken : '';
     include 'overview.html';

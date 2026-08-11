@@ -75,10 +75,11 @@
       source: 'loading', heightM: null, goalWeight: null, weights: [], dates: [],
       measurements: [], measurementHistory: [], measurementTypes: [],
       latestMeasurementEntries: [], goals: [], deeplinks: [], trainingPlan: [],
-      recentTrainingEntries: []
+      trainingPlanHistory: [], recentTrainingEntries: [], trainingExceptions: []
     };
     const IS_READ_ONLY_VIEW = document.body.getAttribute('data-read-only') === '1';
     const SHARE_TOKEN = document.body.getAttribute('data-share-token') || '';
+    const CURRENT_PAGE = document.body.getAttribute('data-page') || 'overview';
 
     function buildDataApiUrl() {
       if (IS_READ_ONLY_VIEW && SHARE_TOKEN) {
@@ -225,6 +226,8 @@
       deeplinkNotice: '',
       showMeasurementDetail: false,
       measurementDetailItem: null
+      ,analysisPeriod: '30'
+      ,analysisNotice: ''
     };
 
     function isFallbackSource() {
@@ -1019,13 +1022,31 @@
       return `${hours}:${minutes}`;
     }
 
+    function parseDurationMinutes(value, explicitMinutes = 0) {
+      const direct = Number(explicitMinutes || 0);
+      if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+      const raw = String(value || '').trim().toLowerCase();
+      const clock = raw.match(/^(\d{1,2}):(\d{2})/);
+      if (clock) return Number(clock[1]) * 60 + Number(clock[2]);
+      const hours = raw.match(/(\d+)\s*h/);
+      const minutes = raw.match(/(\d+)\s*min/);
+      if (hours || minutes) return Number(hours?.[1] || 0) * 60 + Number(minutes?.[1] || 0);
+      const firstNumber = raw.match(/\d+/);
+      return firstNumber ? Number(firstNumber[0]) : 0;
+    }
+
+    function formatDurationClock(minutes) {
+      const total = Math.max(0, Math.min(1439, Math.round(Number(minutes || 0))));
+      return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+    }
+
     function openTrainingForm(prefill = {}) {
       if (IS_READ_ONLY_VIEW) return;
 
       state.trainingForm = {
         date: prefill.date || getTodayIsoDate(),
         trainingText: prefill.trainingText || '',
-        duration: prefill.duration || '',
+        durationMinutes: parseDurationMinutes(prefill.duration, prefill.durationMinutes),
         limitation: prefill.limitation || '',
         loadLevel: prefill.loadLevel || '3',
         painLevel: prefill.painLevel || '1',
@@ -2679,7 +2700,7 @@
               <div class="training-history-card">
                 <div class="training-history-head">
                   <div class="goal-title">${escapeHtml(String(entry.date || '---'))}</div>
-                  <div class="training-history-duration">${escapeHtml(String(entry.duration || ''))}</div>
+                  <div class="training-history-duration">${escapeHtml(formatDurationClock(parseDurationMinutes(entry.duration, entry.durationMinutes)))}</div>
                 </div>
                 ${sourceDay ? `<div class="goal-line">Aus Plan: <strong>${escapeHtml(sourceDay)}</strong></div>` : ''}
                 <div class="training-history-text">${escapeHtml(String(entry.trainingText || '')).replace(/\n/g, '<br />')}</div>
@@ -2727,8 +2748,8 @@
               <textarea id="trainingText" name="trainingText" required>${state.trainingForm.trainingText}</textarea>
             </div>
             <div class="field">
-              <label for="trainingDuration">Dauer (Zeitangabe)</label>
-              <input id="trainingDuration" name="duration" type="text" placeholder="z. B. 45 Min." value="${state.trainingForm.duration}" required />
+              <label for="trainingDuration">Dauer (hh:mm)</label>
+              <input id="trainingDuration" name="durationClock" type="time" min="00:01" max="23:59" step="60" value="${state.trainingForm.durationMinutes > 0 ? formatDurationClock(state.trainingForm.durationMinutes) : ''}" required />
             </div>
             <div class="field">
               <label for="trainingLimitation">Einschraenkung</label>
@@ -2773,11 +2794,15 @@
       form?.addEventListener('submit', async (event) => {
         event.preventDefault();
         const formData = new FormData(form);
+        const durationClock = String(formData.get('durationClock') || '');
+        const durationParts = durationClock.split(':').map(Number);
+        const durationMinutes = (durationParts[0] || 0) * 60 + (durationParts[1] || 0);
         const payload = {
           action: 'save_training',
           date: String(formData.get('date') || ''),
           trainingText: String(formData.get('trainingText') || ''),
-          duration: String(formData.get('duration') || ''),
+          duration: formatDurationClock(durationMinutes),
+          durationMinutes,
           limitation: String(formData.get('limitation') || ''),
           loadLevel: Number(formData.get('loadLevel') || 3),
           painLevel: Number(formData.get('painLevel') || 1),
@@ -3364,12 +3389,345 @@
       }
     }
 
+    function getAnalysisCutoff() {
+      if (state.analysisPeriod === 'all') return null;
+      const days = Number(state.analysisPeriod || 30);
+      const cutoff = new Date();
+      cutoff.setHours(0, 0, 0, 0);
+      cutoff.setDate(cutoff.getDate() - Math.max(1, days) + 1);
+      return cutoff;
+    }
+
+    function dateToIsoLocal(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    function exceptionReasonLabel(reason) {
+      return ({ illness: 'Krank', pain_pause: 'Pause wegen Beschwerden', vacation: 'Urlaub', other: 'Sonstiger Grund' })[reason] || 'Ausnahme';
+    }
+
+    function buildAnalysis() {
+      const cutoff = getAnalysisCutoff();
+      const cutoffTs = cutoff ? cutoff.getTime() : -Infinity;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const trainings = (Array.isArray(data.recentTrainingEntries) ? data.recentTrainingEntries : [])
+        .filter((entry) => parseChartDateToTimestamp(entry.date) >= cutoffTs);
+      const exceptions = Array.isArray(data.trainingExceptions) ? data.trainingExceptions : [];
+      const plans = Array.isArray(data.trainingPlanHistory) ? data.trainingPlanHistory : [];
+      const weekdayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+      let completed = 0;
+      let missed = 0;
+      const consumedTrainingIds = new Set();
+      const calendarDays = {};
+      const excused = { illness: 0, pain_pause: 0, vacation: 0, other: 0 };
+      const firstPlanTs = plans.reduce((min, plan) => Math.min(min, parseChartDateToTimestamp(plan.validFrom)), Infinity);
+      const loopStart = new Date(Math.max(cutoffTs, Number.isFinite(firstPlanTs) ? firstPlanTs : today.getTime()));
+      loopStart.setHours(0, 0, 0, 0);
+
+      for (let day = new Date(loopStart); day <= yesterday; day.setDate(day.getDate() + 1)) {
+        const iso = dateToIsoLocal(day);
+        const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
+        const scheduled = plans.filter((plan) => {
+          const validFrom = parseChartDateToTimestamp(plan.validFrom);
+          const deactivated = plan.deactivatedAt ? parseChartDateToTimestamp(plan.deactivatedAt) : Infinity;
+          return plan.day === weekdayNames[day.getDay()] && validFrom <= dayEnd.getTime() && deactivated > day.getTime();
+        });
+        calendarDays[iso] = calendarDays[iso] || { planned: 0, completed: 0, missed: 0, excused: 0, additional: 0 };
+        calendarDays[iso].planned += scheduled.length;
+        scheduled.forEach((plan) => {
+          const performed = trainings.find((entry) => {
+            if (consumedTrainingIds.has(Number(entry.id)) || String(entry.date) !== iso) return false;
+            const linked = Number(entry.sourcePlanEntryId || 0) > 0;
+            return Number(entry.sourcePlanEntryId) === Number(plan.id)
+              || (linked && String(entry.sourceDay || entry.planDay || '') === String(plan.day));
+          });
+          if (performed) {
+            consumedTrainingIds.add(Number(performed.id));
+            calendarDays[iso].completed += 1;
+            completed += 1;
+            return;
+          }
+          const exception = exceptions.find((item) => String(item.dateFrom) <= iso && String(item.dateTo) >= iso);
+          if (exception) {
+            calendarDays[iso].excused += 1;
+            excused[exception.reason] = (excused[exception.reason] || 0) + 1;
+          } else {
+            calendarDays[iso].missed += 1;
+            missed += 1;
+          }
+        });
+      }
+
+      trainings.forEach((entry) => {
+        const iso = String(entry.date || '');
+        calendarDays[iso] = calendarDays[iso] || { planned: 0, completed: 0, missed: 0, excused: 0, additional: 0 };
+        if (Number(entry.sourcePlanEntryId || 0) > 0 && !consumedTrainingIds.has(Number(entry.id))) {
+          consumedTrainingIds.add(Number(entry.id));
+          calendarDays[iso].planned += 1;
+          calendarDays[iso].completed += 1;
+          completed += 1;
+        } else if (Number(entry.sourcePlanEntryId || 0) <= 0) {
+          calendarDays[iso].additional += 1;
+        }
+      });
+
+      const additional = trainings.filter((entry) => Number(entry.sourcePlanEntryId || 0) <= 0).length;
+      const denominator = completed + missed;
+      const completionRate = denominator > 0 ? Math.round((completed / denominator) * 100) : null;
+      const points = [];
+      (Array.isArray(data.weights) ? data.weights : []).forEach((weight, index) => {
+        const ts = parseChartDateToTimestamp((data.dates || [])[index]);
+        if (Number.isFinite(ts) && ts >= cutoffTs && Number.isFinite(Number(weight))) points.push({ value: Number(weight), ts });
+      });
+      const weightChange = points.length > 1 ? points[points.length - 1].value - points[0].value : null;
+      const plateau = points.length >= 5 && weightChange !== null && Math.abs(weightChange) / points[0].value < 0.005;
+      const avgLoad = trainings.length ? trainings.reduce((sum, entry) => sum + Number(entry.loadLevel || 0), 0) / trainings.length : null;
+      const avgPain = trainings.length ? trainings.reduce((sum, entry) => sum + Number(entry.painLevel || 0), 0) / trainings.length : null;
+      const totalMinutes = trainings.reduce((sum, entry) => sum + parseDurationMinutes(entry.duration, entry.durationMinutes), 0);
+      const statements = [];
+      if (weightChange !== null) {
+        statements.push(weightChange < -0.05
+          ? `Dein Gewicht ist im Zeitraum um ${Math.abs(weightChange).toFixed(1).replace('.', ',')} kg gesunken.`
+          : weightChange > 0.05
+            ? `Dein Gewicht ist im Zeitraum um ${weightChange.toFixed(1).replace('.', ',')} kg gestiegen. Einzelne Schwankungen sind normal.`
+            : 'Dein Gewicht ist im betrachteten Zeitraum weitgehend stabil geblieben.');
+      } else statements.push('Für eine belastbare Gewichtsaussage sind mindestens zwei Messungen im Zeitraum nötig.');
+      if (plateau) statements.push('Der geglättete Verlauf deutet auf ein Plateau hin. Das macht deinen bisherigen Fortschritt nicht kleiner; Regelmäßigkeit zählt.');
+      if (completionRate !== null) statements.push(`Du hast ${completed} geplante Einheiten absolviert; die Planerfüllung ohne entschuldigte Pausen liegt bei ${completionRate} %.`);
+      if (additional > 0) statements.push(`${additional} frei eingetragene Einheiten werden separat als zusätzliche Aktivität berücksichtigt.`);
+      if (missed > 0) statements.push(`${missed} ausgelassene Einheiten entscheiden nicht allein über den Fortschritt. Entscheidend ist die Konstanz über längere Zeit.`);
+      if (avgPain !== null && avgPain >= 3) statements.push('Das durchschnittliche Schmerzempfinden ist erhöht. Bleib im schmerzfreien Bewegungsumfang und kläre anhaltende Beschwerden fachlich ab.');
+      return { points, trainings, calendarDays, completed, missed, excused, additional, completionRate, weightChange, plateau, avgLoad, avgPain, totalMinutes, statements };
+    }
+
+    function buildTrainingLoadChart(trainings) {
+      const ordered = [...trainings]
+        .filter((entry) => Number.isFinite(parseChartDateToTimestamp(entry.date)))
+        .sort((a, b) => parseChartDateToTimestamp(a.date) - parseChartDateToTimestamp(b.date));
+      if (ordered.length === 0) return '<div class="small">Noch keine Trainingswerte im Zeitraum.</div>';
+      const x = (index) => ordered.length === 1 ? 300 : 26 + index * 548 / (ordered.length - 1);
+      const y = (value) => 126 - (Math.max(1, Math.min(5, Number(value || 1))) - 1) * 24;
+      const load = ordered.map((entry, index) => `${x(index)},${y(entry.loadLevel)}`).join(' ');
+      const pain = ordered.map((entry, index) => `${x(index)},${y(entry.painLevel)}`).join(' ');
+      return `<svg viewBox="0 0 600 150" role="img" aria-label="Belastung und Schmerz im Verlauf">
+        ${[1,2,3,4,5].map((level) => `<line x1="26" y1="${y(level)}" x2="574" y2="${y(level)}" stroke="#334155" stroke-width="1"/><text x="10" y="${y(level) + 4}" font-size="10" fill="#94a3b8">${level}</text>`).join('')}
+        <polyline points="${load}" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="${pain}" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+    }
+
+    function calendarMarkerSegments(day) {
+      if (!day) return [];
+      const done = Number(day.completed || 0);
+      const missed = Number(day.missed || 0);
+      const extra = Number(day.additional || 0);
+      const excused = Number(day.excused || 0);
+      return [
+        { count: done, type: 'done', color: '#22c55e' },
+        { count: missed, type: 'missed', color: '#ef4444' },
+        { count: extra, type: 'extra', color: '#3b82f6' },
+        { count: excused, type: 'excused', color: '#94a3b8' }
+      ].filter((segment) => segment.count > 0);
+    }
+
+    function calendarSectorPath(startFraction, endFraction) {
+      const point = (fraction) => {
+        const angle = fraction * Math.PI * 2 - Math.PI / 2;
+        return [12 + 10.5 * Math.cos(angle), 12 + 10.5 * Math.sin(angle)];
+      };
+      const start = point(startFraction);
+      const end = point(endFraction);
+      const largeArc = endFraction - startFraction > 0.5 ? 1 : 0;
+      return `M 12 12 L ${start[0].toFixed(3)} ${start[1].toFixed(3)} A 10.5 10.5 0 ${largeArc} 1 ${end[0].toFixed(3)} ${end[1].toFixed(3)} Z`;
+    }
+
+    function calendarMarkerMarkup(day, dayNumber, markerId) {
+      const segments = calendarMarkerSegments(day);
+      if (segments.length === 0) return `<span>${dayNumber}</span>`;
+      const safeId = `calendar-${markerId.replace(/[^a-z0-9_-]/gi, '-')}`;
+      const total = segments.reduce((sum, segment) => sum + segment.count, 0);
+      let cursor = 0;
+      const shapes = segments.map((segment) => {
+        const start = cursor;
+        cursor += segment.count / total;
+        const shape = segments.length === 1
+          ? '<circle cx="12" cy="12" r="10.5"/>'
+          : `<path d="${calendarSectorPath(start, cursor)}"/>`;
+        return `<g class="calendar-marker-color marker-${segment.type}" fill="${segment.color}">${shape}</g><g class="calendar-marker-print" fill="url(#${safeId}-${segment.type})">${shape}</g>`;
+      }).join('');
+      return `<svg class="day-circle" viewBox="0 0 24 24" role="img" aria-hidden="true">
+        <defs>
+          <pattern id="${safeId}-done" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="4" fill="#fff"/><line x1="0" y1="0" x2="0" y2="4" stroke="#111" stroke-width="1.5"/></pattern>
+          <pattern id="${safeId}-missed" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#fff"/><path d="M0 0L4 4M4 0L0 4" stroke="#111" stroke-width=".9"/></pattern>
+          <pattern id="${safeId}-extra" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#fff"/><line x1="2" y1="0" x2="2" y2="4" stroke="#111" stroke-width="1.3"/></pattern>
+          <pattern id="${safeId}-excused" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#fff"/><circle cx="2" cy="2" r=".8" fill="#111"/></pattern>
+        </defs>
+        ${shapes}<circle class="calendar-marker-outline" cx="12" cy="12" r="10.5"/><text x="12" y="12">${dayNumber}</text>
+      </svg>`;
+    }
+
+    function calendarLegendMarker(type, color, id) {
+      return calendarMarkerMarkup({
+        completed: type === 'done' ? 1 : 0,
+        missed: type === 'missed' ? 1 : 0,
+        additional: type === 'extra' ? 1 : 0,
+        excused: type === 'excused' ? 1 : 0
+      }, '', `legend-${id}`);
+    }
+
+    function buildTrainingCalendar(calendarDays) {
+      const now = new Date();
+      now.setHours(23, 59, 59, 999);
+      const threeMonthCap = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+      const selectedCutoff = getAnalysisCutoff();
+      const effectiveStart = selectedCutoff && selectedCutoff > threeMonthCap ? selectedCutoff : threeMonthCap;
+      effectiveStart.setHours(0, 0, 0, 0);
+      const firstMonth = new Date(effectiveStart.getFullYear(), effectiveStart.getMonth(), 1);
+      const lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const months = [];
+      for (let cursor = new Date(firstMonth); cursor <= lastMonth; cursor.setMonth(cursor.getMonth() + 1)) {
+        const first = new Date(cursor);
+        const year = first.getFullYear();
+        const month = first.getMonth();
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const leading = (first.getDay() + 6) % 7;
+        const cells = Array.from({ length: leading }, () => '<div class="calendar-day empty"></div>');
+        for (let day = 1; day <= daysInMonth; day += 1) {
+          const iso = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+          const cellDate = new Date(year, month, day);
+          if (cellDate < effectiveStart || cellDate > now) {
+            cells.push('<div class="calendar-day out-of-range"></div>');
+            continue;
+          }
+          const stats = calendarDays[iso];
+          const label = stats ? `${stats.completed || 0} absolviert, ${stats.missed || 0} ausgelassen, ${stats.additional || 0} zusätzlich, ${stats.excused || 0} Ausnahme` : 'Kein Training';
+          cells.push(`<div class="calendar-day" title="${escapeHtml(label)}">${calendarMarkerMarkup(stats, day, iso)}</div>`);
+        }
+        months.push(`<div class="training-calendar"><div class="calendar-title">${new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(first)}</div><div class="calendar-weekdays">${['Mo','Di','Mi','Do','Fr','Sa','So'].map((day) => `<span>${day}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div></div>`);
+      }
+      return `<div class="training-calendars">${months.join('')}</div><div class="calendar-legend"><span>${calendarLegendMarker('done', '#22c55e', 'done')}Absolviert</span><span>${calendarLegendMarker('missed', '#ef4444', 'missed')}Ausgelassen</span><span>${calendarLegendMarker('extra', '#3b82f6', 'extra')}Zusatztraining</span><span>${calendarLegendMarker('excused', '#94a3b8', 'excused')}Ausnahme</span></div>`;
+    }
+
+    function renderAnalysis() {
+      const analysis = buildAnalysis();
+      const generatedAt = new Date();
+      const generatedDate = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(generatedAt);
+      const generatedTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(generatedAt);
+      const block = document.createElement('section');
+      block.className = 'block analysis-report';
+      block.id = 'analysisReport';
+      const periodLabels = { '7': '7 Tage', '30': '30 Tage', '90': '90 Tage', '180': '6 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
+      const chartPoints = analysis.points;
+      let polyline = '';
+      if (chartPoints.length > 1) {
+        const min = Math.min(...chartPoints.map((point) => point.value));
+        const max = Math.max(...chartPoints.map((point) => point.value));
+        const range = Math.max(1, max - min);
+        polyline = chartPoints.map((point, index) => `${20 + index * 560 / (chartPoints.length - 1)},${130 - ((point.value - min) / range) * 100}`).join(' ');
+      }
+      block.innerHTML = `
+        <div class="analysis-head">
+          <div><h2>Analyse</h2><div class="small">Kompakte, regelbasierte Auswertung ohne KI</div></div>
+          <div class="analysis-controls no-print">
+            <select id="analysisPeriod">${Object.entries(periodLabels).map(([value, label]) => `<option value="${value}" ${state.analysisPeriod === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
+            ${IS_READ_ONLY_VIEW ? '' : '<button class="btn-secondary" id="printAnalysisBtn" type="button">Als PDF exportieren</button>'}
+          </div>
+        </div>
+        <div class="analysis-a4">
+          <div class="analysis-kpis">
+            <div><span>Gewichtsänderung</span><strong>${analysis.weightChange === null ? '---' : `${analysis.weightChange > 0 ? '+' : ''}${analysis.weightChange.toFixed(1).replace('.', ',')} kg`}</strong></div>
+            <div><span>Planerfüllung</span><strong>${analysis.completionRate === null ? '---' : `${analysis.completionRate} %`}</strong></div>
+            <div><span>Geplant absolviert</span><strong>${analysis.completed}</strong></div>
+            <div><span>Zusätzlich trainiert</span><strong>${analysis.additional}</strong></div>
+            <div><span>Ausgelassen</span><strong>${analysis.missed}</strong></div>
+            <div><span>Trainingsminuten</span><strong>${analysis.totalMinutes || '---'}</strong></div>
+          </div>
+          <div class="analysis-grid">
+            <div class="analysis-chart-card">
+              <h3>Gewichtsverlauf · ${periodLabels[state.analysisPeriod]}</h3>
+              ${polyline ? `<svg viewBox="0 0 600 150" role="img" aria-label="Gewichtsverlauf"><line x1="20" y1="130" x2="580" y2="130" stroke="#cbd5e1"/><polyline points="${polyline}" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>` : '<div class="small">Nicht genügend Messwerte für ein Diagramm.</div>'}
+              <div class="analysis-substats">Ø Belastung: ${analysis.avgLoad === null ? '---' : analysis.avgLoad.toFixed(1).replace('.', ',')} · Ø Schmerz: ${analysis.avgPain === null ? '---' : analysis.avgPain.toFixed(1).replace('.', ',')}</div>
+            </div>
+            <div class="analysis-text-card"><h3>Zusammenfassung</h3><ul>${analysis.statements.map((text) => `<li>${escapeHtml(text)}</li>`).join('')}</ul></div>
+          </div>
+          <div class="analysis-secondary-grid">
+            <div class="analysis-chart-card analysis-load-card">
+              <h3>Belastung und Schmerz</h3>
+              ${buildTrainingLoadChart(analysis.trainings)}
+              <div class="analysis-chart-legend"><span><i class="load"></i>Belastung</span><span><i class="pain"></i>Schmerz</span></div>
+            </div>
+            <div class="analysis-calendar-card">${buildTrainingCalendar(analysis.calendarDays)}</div>
+          </div>
+          <div class="analysis-excused"><strong>Ausnahmen:</strong> Krank ${analysis.excused.illness || 0} · Beschwerden ${analysis.excused.pain_pause || 0} · Urlaub ${analysis.excused.vacation || 0} · Sonstige ${analysis.excused.other || 0}</div>
+          <div class="analysis-disclaimer">BMI-Werte und Trendanalysen sind Orientierungshilfen und keine medizinische Diagnose. Zeitliche Zusammenhänge beweisen keine Ursache.</div>
+          <div class="analysis-generated">Generiert am ${generatedDate} um ${generatedTime} Uhr</div>
+        </div>
+        ${IS_READ_ONLY_VIEW ? '' : `
+          <details class="analysis-exceptions no-print">
+            <summary>Trainingsausnahmen verwalten</summary>
+            <form id="exceptionForm" class="exception-form">
+              <label>Von <input name="dateFrom" type="date" required></label>
+              <label>Bis <input name="dateTo" type="date" required></label>
+              <label>Grund <select name="reason" required><option value="illness">Krank</option><option value="pain_pause">Pause wegen Beschwerden</option><option value="vacation">Urlaub</option><option value="other">Sonstiger Grund</option></select></label>
+              <label>Notiz <input name="note" maxlength="255" placeholder="optional"></label>
+              <button class="btn-secondary" type="submit">Ausnahme speichern</button>
+            </form>
+            <div class="exception-list">${(data.trainingExceptions || []).map((item) => `<div><span>${escapeHtml(item.dateFrom)} bis ${escapeHtml(item.dateTo)} · ${escapeHtml(exceptionReasonLabel(item.reason))}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</span><button type="button" data-delete-exception="${Number(item.id)}">Löschen</button></div>`).join('') || '<div class="small">Keine Ausnahmen erfasst.</div>'}</div>
+          </details>`}
+      `;
+      block.querySelector('#analysisPeriod')?.addEventListener('change', (event) => { state.analysisPeriod = event.target.value; renderAll(); });
+      block.querySelector('#printAnalysisBtn')?.addEventListener('click', () => { document.body.classList.add('print-analysis'); window.print(); setTimeout(() => document.body.classList.remove('print-analysis'), 500); });
+      block.querySelector('#exceptionForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const form = new FormData(event.currentTarget);
+        const response = await fetch(buildDataApiUrl(), jsonPostOptions({ action: 'save_training_exception', dateFrom: form.get('dateFrom'), dateTo: form.get('dateTo'), reason: form.get('reason'), note: form.get('note') }));
+        const result = await response.json();
+        if (!response.ok || !result.ok) { window.alert(result.error || 'Speichern fehlgeschlagen'); return; }
+        await loadDashboardData();
+      });
+      block.querySelectorAll('[data-delete-exception]').forEach((button) => button.addEventListener('click', async () => {
+        const response = await fetch(buildDataApiUrl(), jsonPostOptions({ action: 'delete_training_exception', exceptionId: Number(button.dataset.deleteException) }));
+        const result = await response.json();
+        if (!response.ok || !result.ok) { window.alert(result.error || 'Löschen fehlgeschlagen'); return; }
+        await loadDashboardData();
+      }));
+      return block;
+    }
+
+    function maybeShowMotivation() {
+      if (IS_READ_ONLY_VIEW || !state.hasLoadedServerData) return;
+      const analysis = buildAnalysis();
+      if (!analysis.plateau) return;
+      const key = `fittrack-motivation-${getTodayIsoDate()}`;
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, '1');
+      const overlay = document.createElement('div');
+      overlay.className = 'motivation-toast';
+      overlay.innerHTML = '<strong>Bleib dran.</strong><span>Ein Plateau gehört zum Weg. Jeder Tag und jeder Schritt zählt.</span>';
+      document.body.appendChild(overlay);
+      setTimeout(() => overlay.classList.add('visible'), 20);
+      setTimeout(() => { overlay.classList.remove('visible'); setTimeout(() => overlay.remove(), 300); }, 5000);
+    }
+
     function renderAll() {
       app.innerHTML = '';
 
       const sourceBanner = renderDataSourceBanner();
       if (sourceBanner) {
         app.appendChild(sourceBanner);
+      }
+
+      if (CURRENT_PAGE === 'analysis') {
+        app.appendChild(renderAnalysis());
+        renderDeeplinkList();
+        maybeShowMotivation();
+        return;
       }
 
       app.appendChild(renderOverview());
@@ -3425,6 +3783,7 @@
       }
 
       renderDeeplinkList();
+      maybeShowMotivation();
     }
 
     renderAll();
