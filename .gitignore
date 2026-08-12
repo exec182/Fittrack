@@ -5,3 +5,4 @@ doku/backups/*.sql
 share_pictures/
 2026-08-09-vorcodex.tar.gz
 notes.md
+mysql/export_prodsystem.sql
