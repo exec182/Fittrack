@@ -3485,6 +3485,7 @@
         const ts = parseChartDateToTimestamp((data.dates || [])[index]);
         if (Number.isFinite(ts) && ts >= cutoffTs && Number.isFinite(Number(weight))) points.push({ value: Number(weight), ts });
       });
+      points.sort((a, b) => a.ts - b.ts);
       const weightChange = points.length > 1 ? points[points.length - 1].value - points[0].value : null;
       const plateau = points.length >= 5 && weightChange !== null && Math.abs(weightChange) / points[0].value < 0.005;
       const avgLoad = trainings.length ? trainings.reduce((sum, entry) => sum + Number(entry.loadLevel || 0), 0) / trainings.length : null;
@@ -3506,19 +3507,68 @@
       return { points, trainings, calendarDays, completed, missed, excused, additional, completionRate, weightChange, plateau, avgLoad, avgPain, totalMinutes, statements };
     }
 
-    function buildTrainingLoadChart(trainings) {
+    function getAnalysisTimeDomain(points, trainings) {
+      const cutoff = getAnalysisCutoff();
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
+      const timestamps = [
+        ...points.map((point) => point.ts),
+        ...trainings.map((entry) => parseChartDateToTimestamp(entry.date))
+      ].filter(Number.isFinite);
+      let startTs = cutoff ? cutoff.getTime() : Math.min(...timestamps);
+      if (!Number.isFinite(startTs)) {
+        const fallback = new Date(todayEnd);
+        fallback.setDate(fallback.getDate() - 29);
+        fallback.setHours(0, 0, 0, 0);
+        startTs = fallback.getTime();
+      }
+      return { startTs, endTs: Math.max(startTs + 86400000, todayEnd.getTime()) };
+    }
+
+    function analysisTimeX(timestamp, domain) {
+      const plotLeft = 48;
+      const plotRight = 580;
+      return plotLeft + ((timestamp - domain.startTs) / (domain.endTs - domain.startTs)) * (plotRight - plotLeft);
+    }
+
+    function buildAnalysisExceptionBands(domain) {
+      const plotTop = 12;
+      const plotBottom = 122;
+      return (Array.isArray(data.trainingExceptions) ? data.trainingExceptions : []).map((exception) => {
+        const fromTs = parseChartDateToTimestamp(exception.dateFrom);
+        const toDate = new Date(parseChartDateToTimestamp(exception.dateTo));
+        toDate.setDate(toDate.getDate() + 1);
+        const toTs = toDate.getTime();
+        if (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || toTs <= domain.startTs || fromTs >= domain.endTs) return '';
+        const clippedFrom = Math.max(domain.startTs, fromTs);
+        const clippedTo = Math.min(domain.endTs, toTs);
+        const x = analysisTimeX(clippedFrom, domain);
+        const width = Math.max(1, analysisTimeX(clippedTo, domain) - x);
+        return `<rect class="analysis-exception-band" x="${x}" y="${plotTop}" width="${width}" height="${plotBottom - plotTop}" fill="#94a3b8" fill-opacity=".32"><title>Trainingsausnahme: ${escapeHtml(exceptionReasonLabel(exception.reason))}</title></rect>`;
+      }).join('');
+    }
+
+    function buildAnalysisTimeLabels(domain) {
+      const formatDate = (timestamp) => new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date(timestamp));
+      return `<text x="48" y="142" text-anchor="start" font-size="10" fill="#475569">${formatDate(domain.startTs)}</text>
+        <text x="580" y="142" text-anchor="end" font-size="10" fill="#475569">${formatDate(domain.endTs)}</text>`;
+    }
+
+    function buildTrainingLoadChart(trainings, domain) {
       const ordered = [...trainings]
         .filter((entry) => Number.isFinite(parseChartDateToTimestamp(entry.date)))
         .sort((a, b) => parseChartDateToTimestamp(a.date) - parseChartDateToTimestamp(b.date));
-      if (ordered.length === 0) return '<div class="small">Noch keine Trainingswerte im Zeitraum.</div>';
-      const x = (index) => ordered.length === 1 ? 300 : 26 + index * 548 / (ordered.length - 1);
-      const y = (value) => 126 - (Math.max(1, Math.min(5, Number(value || 1))) - 1) * 24;
-      const load = ordered.map((entry, index) => `${x(index)},${y(entry.loadLevel)}`).join(' ');
-      const pain = ordered.map((entry, index) => `${x(index)},${y(entry.painLevel)}`).join(' ');
-      return `<svg viewBox="0 0 600 150" role="img" aria-label="Belastung und Schmerz im Verlauf">
-        ${[1,2,3,4,5].map((level) => `<line x1="26" y1="${y(level)}" x2="574" y2="${y(level)}" stroke="#334155" stroke-width="1"/><text x="10" y="${y(level) + 4}" font-size="10" fill="#94a3b8">${level}</text>`).join('')}
-        <polyline points="${load}" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-        <polyline points="${pain}" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      const y = (value) => 122 - (Math.max(1, Math.min(5, Number(value || 1))) - 1) * 27.5;
+      const load = ordered.map((entry) => `${analysisTimeX(parseChartDateToTimestamp(entry.date), domain)},${y(entry.loadLevel)}`).join(' ');
+      const pain = ordered.map((entry) => `${analysisTimeX(parseChartDateToTimestamp(entry.date), domain)},${y(entry.painLevel)}`).join(' ');
+      return `<svg class="analysis-chart-svg" viewBox="0 0 600 150" role="img" aria-label="Belastung und Schmerz im Verlauf">
+        ${buildAnalysisExceptionBands(domain)}
+        ${[1,2,3,4,5].map((level) => `<line x1="48" y1="${y(level)}" x2="580" y2="${y(level)}" stroke="#cbd5e1" stroke-width="1"/><text x="42" y="${y(level) + 4}" text-anchor="end" font-size="10" fill="#475569">${level}</text>`).join('')}
+        <line x1="48" y1="12" x2="48" y2="122" stroke="#64748b"/><line x1="48" y1="122" x2="580" y2="122" stroke="#64748b"/>
+        ${buildAnalysisTimeLabels(domain)}
+        ${ordered.length === 0 ? '<text x="314" y="72" text-anchor="middle" font-size="12" fill="#64748b">Noch keine Trainingswerte im Zeitraum.</text>' : ''}
+        <polyline points="${load}" fill="none" stroke="#1e3a8a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="${pain}" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>`;
     }
 
@@ -3529,10 +3579,10 @@
       const extra = Number(day.additional || 0);
       const excused = Number(day.excused || 0);
       return [
-        { count: done, type: 'done', color: '#22c55e' },
+        { count: done, type: 'done', color: '#14532d' },
         { count: missed, type: 'missed', color: '#ef4444' },
-        { count: extra, type: 'extra', color: '#3b82f6' },
-        { count: excused, type: 'excused', color: '#94a3b8' }
+        { count: extra, type: 'extra', color: '#60a5fa' },
+        { count: excused, type: 'excused', color: '#d1d5db' }
       ].filter((segment) => segment.count > 0);
     }
 
@@ -3547,10 +3597,9 @@
       return `M 12 12 L ${start[0].toFixed(3)} ${start[1].toFixed(3)} A 10.5 10.5 0 ${largeArc} 1 ${end[0].toFixed(3)} ${end[1].toFixed(3)} Z`;
     }
 
-    function calendarMarkerMarkup(day, dayNumber, markerId) {
+    function calendarMarkerMarkup(day, dayNumber) {
       const segments = calendarMarkerSegments(day);
       if (segments.length === 0) return `<span>${dayNumber}</span>`;
-      const safeId = `calendar-${markerId.replace(/[^a-z0-9_-]/gi, '-')}`;
       const total = segments.reduce((sum, segment) => sum + segment.count, 0);
       let cursor = 0;
       const shapes = segments.map((segment) => {
@@ -3559,26 +3608,20 @@
         const shape = segments.length === 1
           ? '<circle cx="12" cy="12" r="10.5"/>'
           : `<path d="${calendarSectorPath(start, cursor)}"/>`;
-        return `<g class="calendar-marker-color marker-${segment.type}" fill="${segment.color}">${shape}</g><g class="calendar-marker-print" fill="url(#${safeId}-${segment.type})">${shape}</g>`;
+        return `<g class="calendar-marker-color marker-${segment.type}" fill="${segment.color}">${shape}</g>`;
       }).join('');
       return `<svg class="day-circle" viewBox="0 0 24 24" role="img" aria-hidden="true">
-        <defs>
-          <pattern id="${safeId}-done" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="4" fill="#fff"/><line x1="0" y1="0" x2="0" y2="4" stroke="#111" stroke-width="1.5"/></pattern>
-          <pattern id="${safeId}-missed" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#fff"/><path d="M0 0L4 4M4 0L0 4" stroke="#111" stroke-width=".9"/></pattern>
-          <pattern id="${safeId}-extra" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#fff"/><line x1="2" y1="0" x2="2" y2="4" stroke="#111" stroke-width="1.3"/></pattern>
-          <pattern id="${safeId}-excused" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#fff"/><circle cx="2" cy="2" r=".8" fill="#111"/></pattern>
-        </defs>
         ${shapes}<circle class="calendar-marker-outline" cx="12" cy="12" r="10.5"/><text x="12" y="12">${dayNumber}</text>
       </svg>`;
     }
 
-    function calendarLegendMarker(type, color, id) {
+    function calendarLegendMarker(type) {
       return calendarMarkerMarkup({
         completed: type === 'done' ? 1 : 0,
         missed: type === 'missed' ? 1 : 0,
         additional: type === 'extra' ? 1 : 0,
         excused: type === 'excused' ? 1 : 0
-      }, '', `legend-${id}`);
+      }, '');
     }
 
     function buildTrainingCalendar(calendarDays) {
@@ -3607,11 +3650,11 @@
           }
           const stats = calendarDays[iso];
           const label = stats ? `${stats.completed || 0} absolviert, ${stats.missed || 0} ausgelassen, ${stats.additional || 0} zusätzlich, ${stats.excused || 0} Ausnahme` : 'Kein Training';
-          cells.push(`<div class="calendar-day" title="${escapeHtml(label)}">${calendarMarkerMarkup(stats, day, iso)}</div>`);
+          cells.push(`<div class="calendar-day" title="${escapeHtml(label)}">${calendarMarkerMarkup(stats, day)}</div>`);
         }
         months.push(`<div class="training-calendar"><div class="calendar-title">${new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(first)}</div><div class="calendar-weekdays">${['Mo','Di','Mi','Do','Fr','Sa','So'].map((day) => `<span>${day}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div></div>`);
       }
-      return `<div class="training-calendars">${months.join('')}</div><div class="calendar-legend"><span>${calendarLegendMarker('done', '#22c55e', 'done')}Absolviert</span><span>${calendarLegendMarker('missed', '#ef4444', 'missed')}Ausgelassen</span><span>${calendarLegendMarker('extra', '#3b82f6', 'extra')}Zusatztraining</span><span>${calendarLegendMarker('excused', '#94a3b8', 'excused')}Ausnahme</span></div>`;
+      return `<div class="training-calendars">${months.join('')}</div><div class="calendar-legend"><span>${calendarLegendMarker('done')}Absolviert</span><span>${calendarLegendMarker('missed')}Ausgelassen</span><span>${calendarLegendMarker('extra')}Zusatztraining</span><span>${calendarLegendMarker('excused')}Ausnahme</span></div>`;
     }
 
     function renderAnalysis() {
@@ -3624,12 +3667,29 @@
       block.id = 'analysisReport';
       const periodLabels = { '7': '7 Tage', '30': '30 Tage', '90': '90 Tage', '180': '6 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
       const chartPoints = analysis.points;
+      const analysisTimeDomain = getAnalysisTimeDomain(chartPoints, analysis.trainings);
       let polyline = '';
+      let weightScale = '';
       if (chartPoints.length > 1) {
-        const min = Math.min(...chartPoints.map((point) => point.value));
-        const max = Math.max(...chartPoints.map((point) => point.value));
-        const range = Math.max(1, max - min);
-        polyline = chartPoints.map((point, index) => `${20 + index * 560 / (chartPoints.length - 1)},${130 - ((point.value - min) / range) * 100}`).join(' ');
+        const measuredMin = Math.min(...chartPoints.map((point) => point.value));
+        const measuredMax = Math.max(...chartPoints.map((point) => point.value));
+        const padding = Math.max(0.5, (measuredMax - measuredMin) * 0.1);
+        const scaleMin = Math.floor((measuredMin - padding) * 2) / 2;
+        const scaleMax = Math.ceil((measuredMax + padding) * 2) / 2;
+        const range = Math.max(0.5, scaleMax - scaleMin);
+        const plotLeft = 48;
+        const plotRight = 580;
+        const plotTop = 12;
+        const plotBottom = 122;
+        const y = (value) => plotBottom - ((value - scaleMin) / range) * (plotBottom - plotTop);
+        polyline = chartPoints.map((point) => `${analysisTimeX(point.ts, analysisTimeDomain)},${y(point.value)}`).join(' ');
+        const ticks = Array.from({ length: 5 }, (_, index) => scaleMin + range * index / 4).reverse();
+        const formatWeight = (value) => value.toFixed(1).replace('.', ',');
+        weightScale = `${buildAnalysisExceptionBands(analysisTimeDomain)}${ticks.map((value) => `<line x1="${plotLeft}" y1="${y(value)}" x2="${plotRight}" y2="${y(value)}" stroke="#cbd5e1" stroke-width="1"/><text x="42" y="${y(value) + 4}" text-anchor="end" font-size="10" fill="#475569">${formatWeight(value)}</text>`).join('')}
+          <line x1="${plotLeft}" y1="${plotTop}" x2="${plotLeft}" y2="${plotBottom}" stroke="#64748b"/>
+          <line x1="${plotLeft}" y1="${plotBottom}" x2="${plotRight}" y2="${plotBottom}" stroke="#64748b"/>
+          ${buildAnalysisTimeLabels(analysisTimeDomain)}
+          <text x="8" y="12" font-size="9" fill="#475569">kg</text>`;
       }
       block.innerHTML = `
         <div class="analysis-head">
@@ -3648,21 +3708,23 @@
             <div><span>Ausgelassen</span><strong>${analysis.missed}</strong></div>
             <div><span>Trainingsminuten</span><strong>${analysis.totalMinutes || '---'}</strong></div>
           </div>
-          <div class="analysis-grid">
-            <div class="analysis-chart-card">
-              <h3>Gewichtsverlauf · ${periodLabels[state.analysisPeriod]}</h3>
-              ${polyline ? `<svg viewBox="0 0 600 150" role="img" aria-label="Gewichtsverlauf"><line x1="20" y1="130" x2="580" y2="130" stroke="#cbd5e1"/><polyline points="${polyline}" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>` : '<div class="small">Nicht genügend Messwerte für ein Diagramm.</div>'}
-              <div class="analysis-substats">Ø Belastung: ${analysis.avgLoad === null ? '---' : analysis.avgLoad.toFixed(1).replace('.', ',')} · Ø Schmerz: ${analysis.avgPain === null ? '---' : analysis.avgPain.toFixed(1).replace('.', ',')}</div>
+          <div class="analysis-main-grid">
+            <div class="analysis-charts">
+              <div class="analysis-chart-card">
+                <h3>Gewichtsverlauf · ${periodLabels[state.analysisPeriod]}</h3>
+                ${polyline ? `<svg class="analysis-chart-svg" viewBox="0 0 600 150" role="img" aria-label="Gewichtsverlauf mit Kilogramm- und Datumsskala">${weightScale}<polyline points="${polyline}" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>` : '<div class="small">Nicht genügend Messwerte für ein Diagramm.</div>'}
+                <div class="analysis-substats">Ø Belastung: ${analysis.avgLoad === null ? '---' : analysis.avgLoad.toFixed(1).replace('.', ',')} · Ø Schmerz: ${analysis.avgPain === null ? '---' : analysis.avgPain.toFixed(1).replace('.', ',')}</div>
+              </div>
+              <div class="analysis-chart-card analysis-load-card">
+                <h3>Belastung und Schmerz</h3>
+                ${buildTrainingLoadChart(analysis.trainings, analysisTimeDomain)}
+                <div class="analysis-chart-legend"><span><i class="load"></i>Belastung</span><span><i class="pain"></i>Schmerz</span></div>
+              </div>
             </div>
-            <div class="analysis-text-card"><h3>Zusammenfassung</h3><ul>${analysis.statements.map((text) => `<li>${escapeHtml(text)}</li>`).join('')}</ul></div>
-          </div>
-          <div class="analysis-secondary-grid">
-            <div class="analysis-chart-card analysis-load-card">
-              <h3>Belastung und Schmerz</h3>
-              ${buildTrainingLoadChart(analysis.trainings)}
-              <div class="analysis-chart-legend"><span><i class="load"></i>Belastung</span><span><i class="pain"></i>Schmerz</span></div>
+            <div class="analysis-support-stack">
+              <div class="analysis-text-card"><h3>Zusammenfassung</h3><ul>${analysis.statements.map((text) => `<li>${escapeHtml(text)}</li>`).join('')}</ul></div>
+              <div class="analysis-calendar-card">${buildTrainingCalendar(analysis.calendarDays)}</div>
             </div>
-            <div class="analysis-calendar-card">${buildTrainingCalendar(analysis.calendarDays)}</div>
           </div>
           <div class="analysis-excused"><strong>Ausnahmen:</strong> Krank ${analysis.excused.illness || 0} · Beschwerden ${analysis.excused.pain_pause || 0} · Urlaub ${analysis.excused.vacation || 0} · Sonstige ${analysis.excused.other || 0}</div>
           <div class="analysis-disclaimer">BMI-Werte und Trendanalysen sind Orientierungshilfen und keine medizinische Diagnose. Zeitliche Zusammenhänge beweisen keine Ursache.</div>
