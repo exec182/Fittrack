@@ -262,17 +262,18 @@
     .analysis-kpis > div { background: var(--soft); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
     .analysis-kpis span { display: block; color: var(--muted); font-size: .76rem; }
     .analysis-kpis strong { display: block; margin-top: 5px; font-size: 1.2rem; }
-    .analysis-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; }
-    .analysis-secondary-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; }
+    .analysis-main-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 12px; align-items: start; }
+    .analysis-charts, .analysis-support-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
     .analysis-chart-card, .analysis-text-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--soft); }
     .analysis-calendar-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--soft); }
     .analysis-chart-card svg { width: 100%; height: 180px; }
-    .analysis-load-card svg { height: 150px; }
+    .analysis-chart-card .analysis-chart-svg { display: block; }
+    .analysis-load-card svg { height: 180px; }
     .analysis-chart-legend, .calendar-legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: .75rem; }
     .analysis-chart-legend span, .calendar-legend span { display: inline-flex; align-items: center; gap: 5px; }
     .analysis-chart-legend i { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
-    .analysis-chart-legend .load { background: #f59e0b; }
-    .analysis-chart-legend .pain, .calendar-legend .red { background: #ef4444; }
+    .analysis-chart-legend .load { background: #1e3a8a; }
+    .analysis-chart-legend .pain, .calendar-legend .red { background: #f59e0b; }
     .calendar-legend .green { background: #22c55e; }
     .calendar-legend .blue { background: #3b82f6; }
     .calendar-legend .gray { background: #94a3b8; }
@@ -285,9 +286,8 @@
     .calendar-day.out-of-range { visibility: hidden; }
     .calendar-day span { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 999px; }
     .calendar-day .day-circle { width: 23px; height: 23px; overflow: visible; }
-    .day-circle text { fill: #fff; font-size: 8px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
+    .day-circle text { fill: #fff; stroke: rgba(15,23,42,.8); stroke-width: .8px; paint-order: stroke; font-size: 8px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
     .calendar-marker-outline { fill: none; stroke: rgba(255,255,255,.32); stroke-width: .6; }
-    .calendar-marker-print { display: none; }
     .calendar-legend .day-circle { width: 11px; height: 11px; flex: 0 0 11px; }
     .calendar-legend .day-circle text, .calendar-legend .calendar-marker-outline { display: none; }
     .calendar-legend { margin-top: 7px; }
@@ -307,39 +307,38 @@
 
     @media (max-width: 900px) {
       .analysis-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .analysis-grid { grid-template-columns: 1fr; }
-      .analysis-secondary-grid { grid-template-columns: 1fr; }
+      .analysis-main-grid { grid-template-columns: 1fr; }
     }
 
     @media (prefers-reduced-motion: reduce) { .motivation-toast { transition: none; } }
 
     @media print {
-      @page { size: A4 landscape; margin: 9mm; }
-      body { background: #fff !important; padding: 0 !important; color: #111827 !important; }
-      body > *:not(#app), body #app > *:not(.analysis-report), body .no-print { display: none !important; }
-      body #app { display: block !important; width: 100% !important; }
-      body .analysis-report { display: block !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
-      body .analysis-a4 { gap: 3mm; }
-      body .analysis-kpis { grid-template-columns: repeat(6, 1fr); gap: 2mm; }
-      body .analysis-kpis > div { padding: 2.5mm; break-inside: avoid; }
-      body .analysis-grid { grid-template-columns: 1.1fr .9fr; gap: 3mm; }
-      body .analysis-secondary-grid { grid-template-columns: 1.1fr .9fr; gap: 3mm; }
-      body .analysis-chart-card, body .analysis-text-card { padding: 3mm; break-inside: avoid; background: #f8fafc !important; }
-      body .analysis-calendar-card { padding: 3mm; break-inside: avoid; background: #f8fafc !important; }
-      body .analysis-chart-card svg { height: 43mm; }
-      body .analysis-load-card svg { height: 30mm; }
-      body .calendar-day { min-height: 5.5mm; font-size: 7pt; }
-      body .calendar-day span, body .calendar-day .day-circle { width: 4.8mm; height: 4.8mm; }
-      body .calendar-marker-color { display: none; }
-      body .calendar-marker-print { display: inline; }
-      body .calendar-marker-outline { stroke: #111; stroke-width: .8; }
-      body .day-circle text { fill: #111; font-size: 8px; }
-      body .calendar-legend .day-circle { width: 2.8mm; height: 2.8mm; }
-      body .training-calendars { grid-template-columns: repeat(3, 1fr); gap: 2mm; }
-      body h2 { font-size: 18pt; margin-bottom: 2mm; }
-      body h3 { font-size: 10pt; margin-bottom: 2mm; }
-      body .analysis-text-card li { font-size: 8.5pt; line-height: 1.25; }
-      body .analysis-disclaimer, body .analysis-excused, body .analysis-generated { font-size: 7.5pt; }
+      @page analysis { size: A4 landscape; margin: 9mm; }
+      body.print-analysis { background: #fff !important; padding: 0 !important; color: #111827 !important; }
+      body.print-analysis > *:not(#app), body.print-analysis #app > *:not(.analysis-report), body.print-analysis .no-print { display: none !important; }
+      body.print-analysis #app { display: block !important; width: 100% !important; }
+      body.print-analysis .analysis-report { display: block !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; page: analysis; }
+      body.print-analysis .analysis-a4 { gap: 3mm; }
+      body.print-analysis .analysis-kpis { grid-template-columns: repeat(6, 1fr); gap: 2mm; }
+      body.print-analysis .analysis-kpis > div { padding: 2.5mm; break-inside: avoid; }
+      body.print-analysis .analysis-main-grid { grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 3mm; align-items: start; }
+      body.print-analysis .analysis-charts, body.print-analysis .analysis-support-stack { gap: 3mm; }
+      body.print-analysis .analysis-chart-card, body.print-analysis .analysis-text-card { padding: 3mm; break-inside: avoid; background: #f8fafc !important; }
+      body.print-analysis .analysis-calendar-card { padding: 3mm; break-inside: avoid; background: #f8fafc !important; }
+      body.print-analysis .analysis-chart-card svg { height: 30mm; }
+      body.print-analysis .analysis-exception-band { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      body.print-analysis .analysis-chart-legend i { border: .3mm solid #111; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      body.print-analysis .calendar-day { min-height: 5.5mm; font-size: 7pt; }
+      body.print-analysis .calendar-day span, body.print-analysis .calendar-day .day-circle { width: 4.8mm; height: 4.8mm; }
+      body.print-analysis .calendar-marker-color { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      body.print-analysis .calendar-marker-outline { stroke: #111; stroke-width: .8; }
+      body.print-analysis .day-circle text { font-size: 8px; }
+      body.print-analysis .calendar-legend .day-circle { width: 2.8mm; height: 2.8mm; }
+      body.print-analysis .training-calendars { grid-template-columns: repeat(3, 1fr); gap: 2mm; }
+      body.print-analysis h2 { font-size: 18pt; margin-bottom: 2mm; }
+      body.print-analysis h3 { font-size: 10pt; margin-bottom: 2mm; }
+      body.print-analysis .analysis-text-card li { font-size: 8.5pt; line-height: 1.25; }
+      body.print-analysis .analysis-disclaimer, body.print-analysis .analysis-excused, body.print-analysis .analysis-generated { font-size: 7.5pt; }
     }
 
     h2, h3 {
