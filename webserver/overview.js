@@ -3627,16 +3627,32 @@
         .filter((entry) => Number.isFinite(parseChartDateToTimestamp(entry.date)))
         .sort((a, b) => parseChartDateToTimestamp(a.date) - parseChartDateToTimestamp(b.date));
       const y = (value) => 122 - (Math.max(1, Math.min(5, Number(value || 1))) - 1) * 27.5;
-      const load = ordered.map((entry) => `${analysisTimeX(parseChartDateToTimestamp(entry.date), domain)},${y(entry.loadLevel)}`).join(' ');
-      const pain = ordered.map((entry) => `${analysisTimeX(parseChartDateToTimestamp(entry.date), domain)},${y(entry.painLevel)}`).join(' ');
+      const groupedPoints = (valueKey, color, xOffset, label) => {
+        const groups = new Map();
+        ordered.forEach((entry) => {
+          const date = String(entry.date || '').slice(0, 10);
+          const level = Math.max(1, Math.min(5, Number(entry[valueKey] || 1)));
+          const key = `${date}|${level}`;
+          const group = groups.get(key) || { date, level, count: 0, ts: parseChartDateToTimestamp(entry.date) };
+          group.count += 1;
+          groups.set(key, group);
+        });
+        return [...groups.values()].map((point) => {
+          const radius = Math.min(10, 4 + Math.sqrt(point.count - 1) * 2.4);
+          const countText = point.count === 1 ? '1 Training' : `${point.count} Trainings`;
+          return `<circle cx="${analysisTimeX(point.ts, domain) + xOffset}" cy="${y(point.level)}" r="${radius}" fill="${color}" fill-opacity=".9" stroke="#ffffff" stroke-width="1.2"><title>${label} ${point.level} · ${point.date} · ${countText}</title></circle>`;
+        }).join('');
+      };
+      const loadPoints = groupedPoints('loadLevel', '#1e3a8a', -2.5, 'Belastung');
+      const painPoints = groupedPoints('painLevel', '#f59e0b', 2.5, 'Schmerz');
       return `<svg class="analysis-chart-svg" viewBox="0 0 600 150" role="img" aria-label="Belastung und Schmerz im Verlauf">
         ${buildAnalysisExceptionBands(domain)}
         ${[1,2,3,4,5].map((level) => `<line x1="48" y1="${y(level)}" x2="580" y2="${y(level)}" stroke="#cbd5e1" stroke-width="1"/><text x="42" y="${y(level) + 4}" text-anchor="end" font-size="10" fill="#475569">${level}</text>`).join('')}
         <line x1="48" y1="12" x2="48" y2="122" stroke="#64748b"/><line x1="48" y1="122" x2="580" y2="122" stroke="#64748b"/>
         ${buildAnalysisTimeLabels(domain)}
         ${ordered.length === 0 ? '<text x="314" y="72" text-anchor="middle" font-size="12" fill="#64748b">Noch keine Trainingswerte im Zeitraum.</text>' : ''}
-        <polyline points="${load}" fill="none" stroke="#1e3a8a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-        <polyline points="${pain}" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        ${loadPoints}
+        ${painPoints}
       </svg>`;
     }
 
@@ -4049,7 +4065,7 @@
               <div class="analysis-chart-card analysis-load-card">
                 <h3>Belastung und Schmerz</h3>
                 ${buildTrainingLoadChart(analysis.trainings, analysisTimeDomain)}
-                <div class="analysis-chart-legend"><span><i class="load"></i>Belastung</span><span><i class="pain"></i>Schmerz</span></div>
+                <div class="analysis-chart-legend"><span><i class="load"></i>Belastung</span><span><i class="pain"></i>Schmerz</span><span>Punktgröße = Anzahl gleicher Werte am Tag</span></div>
               </div>
             </div>
             <div class="analysis-support-stack">
