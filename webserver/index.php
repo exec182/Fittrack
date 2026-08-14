@@ -67,6 +67,8 @@ if ($shareToken !== '') {
 $password_change_error = $_SESSION['password_change_error'] ?? '';
 $password_change_success = $_SESSION['password_change_success'] ?? '';
 unset($_SESSION['password_change_error'], $_SESSION['password_change_success']);
+$login_error = !empty($_SESSION['session_expired']) ? 'Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.' : '';
+unset($_SESSION['session_expired']);
 
 // Login verarbeiten
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -157,9 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         
         if ($user && password_verify($password, $user['password'])) {
             clearLoginFailures();
-            session_regenerate_id(true);
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['nick'] = $nick;
+            establishAuthenticatedSession((int)$user['id'], (string)$nick);
             header('Location: ' . $_SERVER['PHP_SELF']);
             exit;
         } else {
@@ -265,9 +265,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                 $db->commit();
                 
-                session_regenerate_id(true);
-                $_SESSION['user_id'] = $newUserId;
-                $_SESSION['nick'] = $nick;
+                establishAuthenticatedSession($newUserId, (string)$nick);
                 header('Location: ' . $_SERVER['PHP_SELF']);
                 exit;
             } catch (PDOException $e) {

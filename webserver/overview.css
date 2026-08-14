@@ -245,6 +245,32 @@
       box-shadow: 0 4px 12px var(--shadow);
     }
 
+    .session-timeout-notice {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3000;
+      width: min(92vw, 620px);
+      padding: 12px 16px;
+      border: 1px solid #f59e0b;
+      border-radius: 12px;
+      background: #fffbeb;
+      color: #92400e;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, .28);
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .session-timeout-notice.expired {
+      border-color: #ef4444;
+      background: #fee2e2;
+      color: #991b1b;
+    }
+
+    .session-timeout-notice a { color: inherit; margin-left: 8px; text-decoration: underline; }
+    .session-timeout-notice.hidden { display: none; }
+
     .analysis-head, .analysis-controls, .exception-form, .exception-list > div {
       display: flex;
       align-items: center;
@@ -258,6 +284,46 @@
     }
 
     .analysis-a4 { display: grid; gap: 14px; }
+    .analysis-page-nav { display: flex; gap: 8px; overflow-x: auto; padding: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 12px var(--shadow); }
+    .analysis-page-nav button { border: 0; border-radius: 9px; padding: 10px 14px; background: transparent; color: var(--muted); font-weight: 800; white-space: nowrap; cursor: pointer; }
+    .analysis-page-nav button.active { background: #2563eb; color: #fff; }
+    .analysis-insights { display: grid; gap: 16px; }
+    .insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .insight-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--soft); min-width: 0; }
+    .insight-card h3 { margin-bottom: 12px; }
+    .insight-card p { line-height: 1.55; }
+    .insight-note { color: var(--muted); font-size: .78rem; border-top: 1px solid var(--border); padding-top: 10px; margin: 12px 0 0 !important; }
+    .fingerprint { display: grid; grid-template-columns: repeat(7, minmax(65px, 1fr)); gap: 6px; overflow-x: auto; }
+    .fingerprint > div, .metric-pair > div { display: grid; gap: 4px; padding: 10px; border-radius: 9px; background: var(--card); text-align: center; }
+    .fingerprint span, .metric-pair span, .result-row span, .quality-row span { color: var(--muted); font-size: .78rem; }
+    .fingerprint small, .result-row small, .quality-row small { color: var(--muted); font-size: .7rem; }
+    .training-response { display: grid; grid-template-columns: minmax(100px, 1fr) repeat(3, minmax(80px, 1fr)); gap: 7px; align-items: stretch; margin-bottom: 8px; }
+    .training-response > strong, .training-response > div { padding: 9px; border-radius: 8px; background: var(--card); }
+    .training-response > div { display: grid; gap: 3px; }
+    .training-response-summary { border-top: 2px solid var(--border); padding-top: 8px; margin-top: 10px; }
+    .training-response-summary > strong, .training-response-summary > div { background: var(--accent-soft); }
+    .training-response span, .training-response small { color: var(--muted); font-size: .72rem; }
+    .result-row, .quality-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .result-row:last-child, .quality-row:last-child { border-bottom: 0; }
+    .result-row small, .quality-row small { grid-column: 1 / -1; }
+    .quality-row.warning { color: #b45309; }
+    .quality-row.quality-invalid strong { color: #ef4444; }
+    .metric-pair { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .plateau-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .plateau-windows > div { display: grid; gap: 6px; padding: 12px; border-radius: 9px; background: var(--card); }
+    .plateau-windows span, .plateau-windows small { color: var(--muted); font-size: .78rem; }
+    .relation-table { display: grid; overflow-x: auto; }
+    .relation-table > div { display: grid; grid-template-columns: minmax(150px, 1.4fr) repeat(3, minmax(82px, .7fr)); gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); }
+    .relation-table > div:last-child { border-bottom: 0; }
+    .relation-table .relation-head { color: var(--muted); font-size: .72rem; font-weight: 800; }
+    .relation-table span:not(:first-child) { text-align: right; }
+    .weight-comparison-summary { color: var(--muted); font-size: .82rem; margin-bottom: 8px; }
+    .body-weight-table { display: grid; overflow-x: auto; }
+    .body-weight-table > div { display: grid; grid-template-columns: minmax(145px, 1.3fr) repeat(3, minmax(75px, .7fr)); gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); }
+    .body-weight-table > div:last-child { border-bottom: 0; }
+    .body-weight-table .relation-head { color: var(--muted); font-size: .72rem; font-weight: 800; }
+    .body-weight-table span { text-align: right; }
+    .movement-rank { display: inline-block; margin-right: 6px; padding: 2px 5px; border-radius: 999px; background: #dbeafe; color: #1d4ed8; font-size: .62rem; font-style: normal; text-transform: uppercase; }
     .analysis-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
     .analysis-kpis > div { background: var(--soft); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
     .analysis-kpis span { display: block; color: var(--muted); font-size: .76rem; }
@@ -308,16 +374,137 @@
     @media (max-width: 900px) {
       .analysis-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .analysis-main-grid { grid-template-columns: 1fr; }
+      .insight-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 600px) {
+      .training-response { grid-template-columns: 1fr; }
+      .metric-pair { grid-template-columns: 1fr; }
+      .plateau-windows { grid-template-columns: 1fr; }
     }
 
     @media (prefers-reduced-motion: reduce) { .motivation-toast { transition: none; } }
 
     @media print {
+      @page { size: A4 landscape; margin: 8mm; }
       @page analysis { size: A4 landscape; margin: 9mm; }
+
+      body:not(.print-analysis) {
+        background: #fff !important;
+        color: #111827 !important;
+        padding: 0 !important;
+        font-size: 8pt;
+      }
+
+      body:not(.print-analysis) > *:not(#app),
+      body:not(.print-analysis) .combo-grid,
+      body:not(.print-analysis) .modal-backdrop,
+      body:not(.print-analysis) .motivation-toast,
+      body:not(.print-analysis) button,
+      body:not(.print-analysis) .measure-open-hint,
+      body:not(.print-analysis) .goal-history-actions,
+      body:not(.print-analysis) .goal-history-legend {
+        display: none !important;
+      }
+
+      body:not(.print-analysis) #app {
+        width: 100% !important;
+        max-width: none !important;
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 3mm !important;
+        align-items: start;
+      }
+
+      body:not(.print-analysis) .dashboard-wide { grid-column: 1 / -1; }
+      body:not(.print-analysis) .block {
+        padding: 3mm !important;
+        border: .25mm solid #94a3b8 !important;
+        border-radius: 2mm !important;
+        box-shadow: none !important;
+        background: #fff !important;
+        break-inside: avoid;
+        min-width: 0;
+      }
+
+      body:not(.print-analysis) h2 {
+        margin: 0 0 2mm !important;
+        font-size: 13pt !important;
+        line-height: 1.1;
+        color: #111827 !important;
+      }
+
+      body:not(.print-analysis) .dashboard-overview .table-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+        gap: 1.5mm !important;
+      }
+
+      body:not(.print-analysis) .table-item {
+        padding: 1.7mm !important;
+        border-radius: 1.5mm !important;
+        break-inside: avoid;
+      }
+
+      body:not(.print-analysis) .table-item span { font-size: 7pt; margin-bottom: .7mm; }
+      body:not(.print-analysis) .table-item strong { font-size: 8.5pt; }
+      body:not(.print-analysis) .profile-editor { display: none !important; }
+
+      body:not(.print-analysis) .goals-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 2mm !important;
+      }
+
+      body:not(.print-analysis) .goal-card,
+      body:not(.print-analysis) .goal-history-card,
+      body:not(.print-analysis) .training-history-card,
+      body:not(.print-analysis) .plan-card,
+      body:not(.print-analysis) .measure-card {
+        padding: 2mm !important;
+        gap: 1mm !important;
+        border-radius: 1.5mm !important;
+        break-inside: avoid;
+        background: #f8fafc !important;
+      }
+
+      body:not(.print-analysis) .goal-line,
+      body:not(.print-analysis) .small,
+      body:not(.print-analysis) .subtle,
+      body:not(.print-analysis) .training-history-text { font-size: 7.5pt !important; line-height: 1.25 !important; }
+      body:not(.print-analysis) .goal-progress-track { height: 1.5mm; }
+
+      body:not(.print-analysis) .dashboard-weight-chart,
+      body:not(.print-analysis) .dashboard-rate-chart { break-inside: avoid; }
+      body:not(.print-analysis) .chart-box { padding: 1.5mm !important; border-radius: 1.5mm !important; }
+      body:not(.print-analysis) .chart-svg-main { height: 50mm !important; }
+      body:not(.print-analysis) .chart-box .toggle-row { display: none !important; }
+
+      body:not(.print-analysis) .dashboard-measurements .measure-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 2mm !important;
+      }
+      body:not(.print-analysis) .measure-chart { height: 39mm !important; border-radius: 1.5mm !important; }
+      body:not(.print-analysis) .measure-legend { gap: 2mm; font-size: 6.5pt; }
+      body:not(.print-analysis) .measure-card .subtle:last-child { margin-top: 0; }
+
+      body:not(.print-analysis) .plan-grid,
+      body:not(.print-analysis) .training-history-list,
+      body:not(.print-analysis) .goals-history-list {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 2mm !important;
+      }
+      body:not(.print-analysis) .training-meta-pills { gap: 1mm; }
+      body:not(.print-analysis) .training-meta-pill { padding: 1mm 1.5mm; font-size: 6.5pt; }
+      body:not(.print-analysis) .training-history-more { display: none !important; }
+      body:not(.print-analysis) details:not([open]) > *:not(summary) { display: none !important; }
+
       body.print-analysis { background: #fff !important; padding: 0 !important; color: #111827 !important; }
-      body.print-analysis > *:not(#app), body.print-analysis #app > *:not(.analysis-report), body.print-analysis .no-print { display: none !important; }
+      body.print-analysis > *:not(#app), body.print-analysis #app > *:not(.analysis-report):not(.analysis-insights), body.print-analysis .no-print { display: none !important; }
       body.print-analysis #app { display: block !important; width: 100% !important; }
       body.print-analysis .analysis-report { display: block !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; page: analysis; }
+      body.print-analysis .analysis-insights { display: block !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; page: analysis; }
+      body.print-analysis .analysis-insights .insight-grid { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3mm; }
+      body.print-analysis .insight-card { break-inside: avoid; padding: 3mm; background: #f8fafc !important; }
+      body.print-analysis .insight-note, body.print-analysis .result-row small, body.print-analysis .quality-row small { font-size: 7.5pt; }
       body.print-analysis .analysis-a4 { gap: 3mm; }
       body.print-analysis .analysis-kpis { grid-template-columns: repeat(6, 1fr); gap: 2mm; }
       body.print-analysis .analysis-kpis > div { padding: 2.5mm; break-inside: avoid; }
@@ -1011,6 +1198,17 @@
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 12px;
+    }
+
+    .training-history-card.training-history-overflow { display: none; }
+
+    .training-history-more {
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+      color: var(--muted);
+      font-size: .84rem;
+      font-weight: 700;
     }
 
     .training-history-card {

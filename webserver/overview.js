@@ -1,5 +1,36 @@
 ﻿const CSRF_TOKEN = document.body.getAttribute('data-csrf-token') || '';
 
+    let sessionExpiresAt = Number(document.body.getAttribute('data-session-expires-at') || 0) * 1000;
+    let sessionExpiredShown = false;
+
+    function showSessionExpired() {
+      if (IS_READ_ONLY_VIEW || sessionExpiredShown) return;
+      sessionExpiredShown = true;
+      const notice = document.getElementById('sessionTimeoutNotice');
+      if (!notice) return;
+      notice.className = 'session-timeout-notice expired';
+      notice.innerHTML = 'Deine Sitzung ist abgelaufen. Änderungen sind nicht mehr möglich. <a href="index.php">Erneut anmelden</a>';
+    }
+
+    function updateSessionTimeoutNotice() {
+      if (IS_READ_ONLY_VIEW || !sessionExpiresAt) return;
+      const remaining = sessionExpiresAt - Date.now();
+      if (remaining <= 0) {
+        showSessionExpired();
+        return;
+      }
+      const notice = document.getElementById('sessionTimeoutNotice');
+      if (!notice) return;
+      if (remaining > 5 * 60 * 1000) {
+        notice.className = 'session-timeout-notice hidden';
+        return;
+      }
+      const minutes = Math.floor(remaining / 60000);
+      const seconds = Math.floor((remaining % 60000) / 1000);
+      notice.className = 'session-timeout-notice';
+      notice.textContent = `Deine Sitzung läuft in ${minutes}:${String(seconds).padStart(2, '0')} Minuten ab. Bitte speichere offene Eingaben.`;
+    }
+
     function escapeHtml(value) {
       return String(value ?? '')
         .replace(/&/g, '&amp;')
@@ -80,6 +111,21 @@
     const IS_READ_ONLY_VIEW = document.body.getAttribute('data-read-only') === '1';
     const SHARE_TOKEN = document.body.getAttribute('data-share-token') || '';
     const CURRENT_PAGE = document.body.getAttribute('data-page') || 'overview';
+
+    const authenticatedFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await authenticatedFetch(...args);
+      if (!IS_READ_ONLY_VIEW && response.status === 401) showSessionExpired();
+      const refreshedExpiry = Number(response.headers.get('X-Session-Expires-At') || 0);
+      if (!IS_READ_ONLY_VIEW && response.ok && refreshedExpiry > 0) {
+        sessionExpiresAt = refreshedExpiry * 1000;
+        sessionExpiredShown = false;
+        updateSessionTimeoutNotice();
+      }
+      return response;
+    };
+    updateSessionTimeoutNotice();
+    window.setInterval(updateSessionTimeoutNotice, 1000);
 
     function buildDataApiUrl() {
       if (IS_READ_ONLY_VIEW && SHARE_TOKEN) {
@@ -202,6 +248,7 @@
       showFiveAverage: false,
       showTwentyOneAverage: false,
       showAllTraining: false,
+      visibleTrainingHistoryRows: 2,
       showTrainingPlanEditor: false,
       trainingPlanForm: null,
       trainingPlanNotice: '',
@@ -228,6 +275,7 @@
       measurementDetailItem: null
       ,analysisPeriod: '30'
       ,analysisNotice: ''
+      ,analysisView: 'overview'
     };
 
     function isFallbackSource() {
@@ -1393,7 +1441,7 @@
 
     function renderOverview() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-overview dashboard-wide';
 
       if (!Array.isArray(data.weights) || data.weights.length === 0) {
         const rawHeight = Number(data.heightM ?? data.heightCm);
@@ -1625,7 +1673,7 @@
 
     function renderGoalsBlock() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-goals dashboard-wide';
       if (state.recentlyAchievedGoalIds.length > 0) {
         block.classList.add('goal-celebrate');
       }
@@ -1739,7 +1787,7 @@
 
     function renderGoalsHistoryBlock() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-goal-history dashboard-wide';
 
       const goals = Array.isArray(data.goals) ? data.goals : [];
       if (goals.length === 0) {
@@ -1865,7 +1913,7 @@
 
     function renderActions() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-actions';
       block.innerHTML = `
         <h2>Maßnahmen</h2>
         <div class="action-row">
@@ -1902,7 +1950,7 @@
 
     function renderWindowSelector() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-window-selector';
 
       const options = ['1 Woche', '2 Wochen', '3 Wochen', '1 Monat', '3 Monate', '1 Jahr', 'Alles'];
       block.innerHTML = `
@@ -1926,7 +1974,7 @@
 
     function renderChart() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-weight-chart';
       const isMobileChart = window.matchMedia('(max-width: 760px)').matches;
 
       const visible = getWindowedData();
@@ -2065,7 +2113,7 @@
 
     function renderRateChart() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-rate-chart';
       const isMobileChart = window.matchMedia('(max-width: 760px)').matches;
 
       const visible = getWindowedData();
@@ -2384,7 +2432,7 @@
 
     function renderMeasurements() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-measurements dashboard-wide';
       const measurements = getMeasurements();
       const visible = getWindowedData();
       const dates = visible.dates || data.dates || [];
@@ -2586,7 +2634,7 @@
 
     function renderTrainingPlan() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-training-plan dashboard-wide';
 
       const allPlanItems = getTrainingPlanEntries();
       const weekdayOrder = getWeekdayOrder();
@@ -2676,7 +2724,7 @@
 
     function renderRecentTrainingEntriesBlock() {
       const block = document.createElement('section');
-      block.className = 'block';
+      block.className = 'block dashboard-training-history dashboard-wide';
 
       const entries = Array.isArray(data.recentTrainingEntries) ? data.recentTrainingEntries : [];
       if (entries.length === 0) {
@@ -2687,17 +2735,27 @@
         return block;
       }
 
+      const historyColumns = window.matchMedia('(min-width: 1900px)').matches
+        ? 4
+        : window.matchMedia('(min-width: 1400px)').matches
+          ? 3
+          : window.matchMedia('(max-width: 760px)').matches
+            ? 1
+            : Math.max(1, Math.floor(((app.clientWidth || window.innerWidth) + 12) / 292));
+      const visibleEntryCount = Math.max(2, Number(state.visibleTrainingHistoryRows || 2)) * historyColumns;
+      const allEntriesVisible = visibleEntryCount >= entries.length;
+
       block.innerHTML = `
         <h2>Letzte absolvierte Trainings</h2>
         <div class="training-history-list">
-          ${entries.map((entry) => {
+          ${entries.map((entry, entryIndex) => {
             const limitation = String(entry?.limitation || '').trim();
             const sourceDay = String(entry?.sourceDay || '').trim();
             const hasPlanReference = String(entry?.planFocus || '').trim() !== '' || String(entry?.planNote || '').trim() !== '';
             const loadTone = getSeverityTone(entry.loadLevel);
             const painTone = getSeverityTone(entry.painLevel);
             return `
-              <div class="training-history-card">
+              <div class="training-history-card ${entryIndex >= visibleEntryCount ? 'training-history-overflow' : ''}">
                 <div class="training-history-head">
                   <div class="goal-title">${escapeHtml(String(entry.date || '---'))}</div>
                   <div class="training-history-duration">${escapeHtml(formatDurationClock(parseDurationMinutes(entry.duration, entry.durationMinutes)))}</div>
@@ -2724,7 +2782,17 @@
             `;
           }).join('')}
         </div>
+        <div class="training-history-more">
+          ${allEntriesVisible
+            ? '<span>Vollständig alle angezeigt</span>'
+            : '<button class="btn-secondary" id="trainingHistoryMoreBtn" type="button">Mehr</button>'}
+        </div>
       `;
+
+      block.querySelector('#trainingHistoryMoreBtn')?.addEventListener('click', () => {
+        state.visibleTrainingHistoryRows = Math.max(2, Number(state.visibleTrainingHistoryRows || 2)) + 2;
+        renderAll();
+      });
 
       return block;
     }
@@ -3657,6 +3725,269 @@
       return `<div class="training-calendars">${months.join('')}</div><div class="calendar-legend"><span>${calendarLegendMarker('done')}Absolviert</span><span>${calendarLegendMarker('missed')}Ausgelassen</span><span>${calendarLegendMarker('extra')}Zusatztraining</span><span>${calendarLegendMarker('excused')}Ausnahme</span></div>`;
     }
 
+    function analysisNumber(value, digits = 2, signed = false) {
+      if (!Number.isFinite(value)) return '---';
+      const prefix = signed && value > 0 ? '+' : '';
+      return `${prefix}${value.toFixed(digits).replace('.', ',')}`;
+    }
+
+    function allWeightPoints() {
+      return (Array.isArray(data.weights) ? data.weights : []).map((value, index) => ({
+        value: Number(value), ts: parseChartDateToTimestamp((data.dates || [])[index]), date: String((data.dates || [])[index] || '').slice(0, 10)
+      })).filter((point) => Number.isFinite(point.value) && Number.isFinite(point.ts)).sort((a, b) => a.ts - b.ts);
+    }
+
+    function filterAnalysisPeriod(points) {
+      const cutoff = getAnalysisCutoff();
+      const cutoffTs = cutoff ? cutoff.getTime() : -Infinity;
+      return points.filter((point) => point.ts >= cutoffTs);
+    }
+
+    function linearTrend(points) {
+      if (points.length < 2) return null;
+      const x0 = points[0].ts;
+      const xs = points.map((point) => (point.ts - x0) / 86400000);
+      const meanX = xs.reduce((sum, value) => sum + value, 0) / xs.length;
+      const meanY = points.reduce((sum, point) => sum + point.value, 0) / points.length;
+      const denominator = xs.reduce((sum, value) => sum + (value - meanX) ** 2, 0);
+      const slope = denominator ? xs.reduce((sum, value, index) => sum + (value - meanX) * (points[index].value - meanY), 0) / denominator : 0;
+      return { slope, valueAt: (ts) => meanY + slope * (((ts - x0) / 86400000) - meanX) };
+    }
+
+    function measurementSeriesMatching(pattern) {
+      const histories = Array.isArray(data.measurementHistory) ? data.measurementHistory : [];
+      const found = histories.find((entry) => pattern.test(normalizeTypeName(entry.typeName)));
+      if (!found) return null;
+      const points = (found.values || []).map((value, index) => ({ value: Number(value), ts: parseChartDateToTimestamp((found.dates || [])[index]), date: String((found.dates || [])[index] || '').slice(0, 10) }))
+        .filter((point) => Number.isFinite(point.value) && Number.isFinite(point.ts)).sort((a, b) => a.ts - b.ts);
+      return { name: String(found.typeName || 'Messwert'), unit: String(found.unit || ''), points };
+    }
+
+    function buildWeekFingerprint() {
+      const points = filterAnalysisPeriod(allWeightPoints());
+      const trend = linearTrend(points);
+      const names = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+      return names.map((name, day) => {
+        const values = trend ? points.filter((point) => new Date(point.ts).getDay() === day).map((point) => point.value - trend.valueAt(point.ts)) : [];
+        return { name, day, count: values.length, average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null };
+      }).sort((a, b) => ((a.day + 6) % 7) - ((b.day + 6) % 7));
+    }
+
+    function evidenceLevel(count) {
+      if (count < 3) return { label: 'Zu wenig Daten', severity: 'unknown' };
+      if (count < 5) return { label: 'Erste Tendenz', severity: 'low' };
+      if (count < 8) return { label: 'Eingeschränkt belastbar', severity: 'medium' };
+      if (count < 12) return { label: 'Belastbar', severity: 'high' };
+      return { label: 'Gut belastbar', severity: 'none' };
+    }
+
+    function weightNearTimestamp(points, targetTs, toleranceDays = 1) {
+      const candidates = points.filter((point) => Math.abs(point.ts - targetTs) <= toleranceDays * 86400000);
+      return candidates.sort((a, b) => Math.abs(a.ts - targetTs) - Math.abs(b.ts - targetTs))[0] || null;
+    }
+
+    function buildTrainingResponse() {
+      const points = filterAnalysisPeriod(allWeightPoints());
+      const trend = linearTrend(points);
+      const cutoff = getAnalysisCutoff(); const cutoffTs = cutoff ? cutoff.getTime() : -Infinity;
+      const trainings = (Array.isArray(data.recentTrainingEntries) ? data.recentTrainingEntries : []).filter((entry) => parseChartDateToTimestamp(entry.date) >= cutoffTs);
+      return [5, 4, 3, 2, 1].map((level) => ({ label: `Belastung ${level}`, min: level, max: level })).map((group) => {
+        const entries = trainings.filter((entry) => Number(entry.loadLevel) >= group.min && Number(entry.loadLevel) <= group.max);
+        const horizons = [1, 2, 3].map((days) => {
+          const observations = trend ? entries.map((entry) => weightNearTimestamp(points, parseChartDateToTimestamp(entry.date) + days * 86400000)).filter(Boolean).map((point) => point.value - trend.valueAt(point.ts)) : [];
+          return { days, count: observations.length, average: observations.length ? observations.reduce((sum, value) => sum + value, 0) / observations.length : null };
+        });
+        return { ...group, entries: entries.length, horizons };
+      });
+    }
+
+    function buildAdditionalTrainingResponse() {
+      const points = filterAnalysisPeriod(allWeightPoints()); const trend = linearTrend(points);
+      const cutoff = getAnalysisCutoff(); const cutoffTs = cutoff ? cutoff.getTime() : -Infinity;
+      const entries = (Array.isArray(data.recentTrainingEntries) ? data.recentTrainingEntries : []).filter((entry) => Number(entry.sourcePlanEntryId || 0) <= 0 && parseChartDateToTimestamp(entry.date) >= cutoffTs);
+      return { entries: entries.length, horizons: [1, 2, 3].map((days) => {
+        const observations = trend ? entries.map((entry) => weightNearTimestamp(points, parseChartDateToTimestamp(entry.date) + days * 86400000)).filter(Boolean).map((point) => point.value - trend.valueAt(point.ts)) : [];
+        return { days, count: observations.length, average: observations.length ? observations.reduce((sum, value) => sum + value, 0) / observations.length : null };
+      }) };
+    }
+
+    function buildWeeklyComparisons() {
+      const analysis = buildAnalysis();
+      const points = filterAnalysisPeriod(allWeightPoints());
+      const weeks = new Map();
+      Object.entries(analysis.calendarDays).forEach(([date, stats]) => {
+        const parsed = new Date(`${date}T12:00:00`);
+        const monday = new Date(parsed); monday.setDate(parsed.getDate() - ((parsed.getDay() + 6) % 7));
+        const key = dateToIsoLocal(monday);
+        const week = weeks.get(key) || { completed: 0, missed: 0, additional: 0 };
+        week.completed += Number(stats.completed || 0); week.missed += Number(stats.missed || 0); week.additional += Number(stats.additional || 0);
+        weeks.set(key, week);
+      });
+      weeks.forEach((week, key) => {
+        const start = parseChartDateToTimestamp(key); const first = weightNearTimestamp(points, start, 2); const last = weightNearTimestamp(points, start + 6 * 86400000, 2);
+        week.change = first && last && last.ts > first.ts ? last.value - first.value : null;
+        week.rate = week.completed + week.missed > 0 ? week.completed / (week.completed + week.missed) * 100 : null;
+      });
+      const aggregate = (filter) => {
+        const selected = [...weeks.values()].filter((week) => filter(week) && Number.isFinite(week.change));
+        return { count: selected.length, average: selected.length ? selected.reduce((sum, week) => sum + week.change, 0) / selected.length : null };
+      };
+      return {
+        completion: [{ label: '≥ 90 %', result: aggregate((w) => w.rate >= 90) }, { label: '70–89 %', result: aggregate((w) => w.rate >= 70 && w.rate < 90) }, { label: '< 70 %', result: aggregate((w) => w.rate < 70) }]
+      };
+    }
+
+    function buildBodyInsights() {
+      const weights = filterAnalysisPeriod(allWeightPoints());
+      const heightCm = Number(data.heightM) * 100;
+      const histories = Array.isArray(data.measurementHistory) ? data.measurementHistory : [];
+      const series = histories.map((entry) => {
+        const name = String(entry.typeName || 'Messwert');
+        const unit = String(entry.unit || '');
+        const points = (entry.values || []).map((value, index) => ({
+          value: Number(value),
+          ts: parseChartDateToTimestamp((entry.dates || [])[index]),
+          date: String((entry.dates || [])[index] || '').slice(0, 10)
+        })).filter((point) => Number.isFinite(point.value) && Number.isFinite(point.ts)).sort((a, b) => a.ts - b.ts);
+        return { name, unit, points: filterAnalysisPeriod(points) };
+      }).filter((item) => item.points.length && !/gewicht|weight/.test(normalizeTypeName(item.name)) && normalizeTypeName(item.unit) !== 'kg');
+      const ratios = series.map((item) => {
+        const first = item.points[0]; const last = item.points[item.points.length - 1];
+        const firstWeight = first ? weightNearTimestamp(weights, first.ts, 7) : null; const lastWeight = last ? weightNearTimestamp(weights, last.ts, 7) : null;
+        const kgLost = firstWeight && lastWeight ? firstWeight.value - lastWeight.value : null;
+        return { ...item, change: first && last ? last.value - first.value : null, perFive: kgLost > 0.5 ? (last.value - first.value) / kgLost * 5 : null, last: last?.value ?? null };
+      });
+      const quality = series.map((item) => {
+        const diffs = item.points.slice(1).map((point, index) => point.value - item.points[index].value);
+        const median = diffs.length ? [...diffs].sort((a,b) => a-b)[Math.floor(diffs.length / 2)] : 0;
+        const deviations = diffs.map((value) => Math.abs(value - median));
+        const mad = deviations.length ? [...deviations].sort((a,b) => a-b)[Math.floor(deviations.length / 2)] : null;
+        const typicalSize = item.points.length ? item.points.reduce((sum, point) => sum + point.value, 0) / item.points.length : 0;
+        const relativeMad = typicalSize > 0 && mad !== null ? mad / typicalSize * 100 : null;
+        let level = 'Zu wenig Messungen';
+        let severity = 'unknown';
+        if (mad !== null && diffs.length >= 4 && relativeMad !== null) {
+          if (relativeMad === 0) { level = 'Keine Streuung'; severity = 'none'; }
+          else if (relativeMad <= 1) { level = 'Niedrige Streuung'; severity = 'low'; }
+          else if (relativeMad <= 2) { level = 'Mittlere Streuung'; severity = 'medium'; }
+          else if (relativeMad < 5) { level = 'Große Streuung'; severity = 'high'; }
+          else { level = 'Nicht auswertbar'; severity = 'invalid'; }
+        }
+        const lastDiff = diffs[diffs.length - 1]; const outlier = diffs.length >= 5 && mad > 0 && Math.abs(lastDiff - median) > Math.max(2, mad * 3);
+        return { name: item.name, count: item.points.length, level, severity, outlier, mad, relativeMad };
+      });
+      const belly = ratios.find((item) => /bauch|waist/.test(normalizeTypeName(item.name)));
+      const underbust = ratios.find((item) => /unterbrust|underbust/.test(normalizeTypeName(item.name)));
+      const chest = ratios.find((item) => {
+        const name = normalizeTypeName(item.name);
+        return /brust|chest/.test(name) && !/unterbrust|underbust/.test(name);
+      });
+      const waist = ratios.find((item) => /bund/.test(normalizeTypeName(item.name))); const hip = ratios.find((item) => /po|hip/.test(normalizeTypeName(item.name)));
+      const relation = (label, a, bValue, mode = 'difference') => {
+        if (!a || !a.points.length || !Number.isFinite(bValue)) return { label, start: null, current: null, change: null };
+        const start = mode === 'ratio' ? a.points[0].value / bValue : a.points[0].value - bValue;
+        const currentBase = mode === 'ratio' ? bValue : bValue;
+        const current = mode === 'ratio' ? a.last / currentBase : a.last - currentBase;
+        return { label, start, current, change: current - start, mode };
+      };
+      const pairRelation = (label, a, b, mode = 'difference') => {
+        if (!a || !b || !a.points.length || !b.points.length) return { label, start: null, current: null, change: null, mode };
+        const start = mode === 'ratio' ? a.points[0].value / b.points[0].value : a.points[0].value - b.points[0].value;
+        const current = mode === 'ratio' ? a.last / b.last : a.last - b.last;
+        return { label, start, current, change: current - start, mode };
+      };
+      const relations = [
+        relation('Bauch / Körpergröße', belly, heightCm, 'ratio'), relation('Bund / Körpergröße', waist, heightCm, 'ratio'),
+        relation('Brust / Körpergröße', chest, heightCm, 'ratio'), pairRelation('Brust / Unterbrust', chest, underbust, 'ratio'),
+        relation('Po / Körpergröße', hip, heightCm, 'ratio'),
+        pairRelation('Bauch − Brust', belly, chest), pairRelation('Bauch − Bund', belly, waist),
+        pairRelation('Bauch − Po', belly, hip), pairRelation('Bund / Po', waist, hip, 'ratio')
+      ];
+      const weightStart = weights[0]?.value ?? null; const weightEnd = weights[weights.length - 1]?.value ?? null;
+      const weightChange = Number.isFinite(weightStart) && Number.isFinite(weightEnd) ? weightEnd - weightStart : null;
+      const weightPercent = weightChange !== null && weightStart > 0 ? weightChange / weightStart * 100 : null;
+      const weightLost = weightChange !== null ? -weightChange : null;
+      const weightComparisons = ratios.map((item) => {
+        const start = item.points[0]?.value ?? null; const current = item.last;
+        const percent = Number.isFinite(start) && start !== 0 && Number.isFinite(current) ? (current - start) / start * 100 : null;
+        const perFive = weightLost > .5 && item.change !== null ? item.change / weightLost * 5 : null;
+        return { name: item.name, change: item.change, percent, perFive };
+      }).sort((a, b) => (Number.isFinite(b.percent) ? Math.abs(b.percent) : -1) - (Number.isFinite(a.percent) ? Math.abs(a.percent) : -1));
+      return { ratios, quality, relations, weightComparisons, weightChange, weightPercent };
+    }
+
+    function buildPlateauWindow(days) {
+      const cutoff = Date.now() - days * 86400000;
+      const weights = allWeightPoints().filter((point) => point.ts >= cutoff);
+      const belly = measurementSeriesMatching(/bauch|waist/); const bellyPoints = belly ? belly.points.filter((point) => point.ts >= cutoff) : [];
+      if (weights.length < 3 || bellyPoints.length < 2) return { days, state: 'Noch nicht bewertbar', text: `Mindestens drei Gewichte und zwei Bauchmessungen in ${days} Tagen nötig.` };
+      const weightChange = weights[weights.length - 1].value - weights[0].value; const bellyChange = bellyPoints[bellyPoints.length - 1].value - bellyPoints[0].value;
+      const weightLimit = days <= 7 ? .3 : .5; const bellyLimit = days <= 7 ? .6 : 1;
+      if (Math.abs(weightChange) < weightLimit && bellyChange < -bellyLimit) return { days, state: 'Fortschritt trotz Gewichtsstillstand', text: `Gewicht ${analysisNumber(weightChange, 1, true)} kg, Bauch ${analysisNumber(bellyChange, 1, true)} cm.` };
+      if (weightChange < -weightLimit && Math.abs(bellyChange) < bellyLimit) return { days, state: 'Weiter beobachten', text: `Gewicht fällt (${analysisNumber(weightChange, 1, true)} kg), Bauch bleibt annähernd stabil.` };
+      if (Math.abs(weightChange) < weightLimit && Math.abs(bellyChange) < bellyLimit) return { days, state: days <= 7 ? 'Kurzfristige Stagnation' : 'Mögliches echtes Plateau', text: `Gewicht ${analysisNumber(weightChange, 1, true)} kg, Bauch ${analysisNumber(bellyChange, 1, true)} cm.` };
+      return { days, state: 'Kein Plateau erkennbar', text: `Gewicht ${analysisNumber(weightChange, 1, true)} kg, Bauch ${analysisNumber(bellyChange, 1, true)} cm.` };
+    }
+
+    function analysisControlMarkup() {
+      const labels = { '7': '7 Tage', '30': '30 Tage', '90': '90 Tage', '180': '6 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
+      return `<div class="analysis-controls no-print"><select id="analysisPeriod">${Object.entries(labels).map(([value, label]) => `<option value="${value}" ${state.analysisPeriod === value ? 'selected' : ''}>${label}</option>`).join('')}</select>${IS_READ_ONLY_VIEW ? '' : '<button class="btn-secondary" id="printAnalysisBtn" type="button">Als PDF exportieren</button>'}</div>`;
+    }
+
+    function bindAnalysisControls(block) {
+      block.querySelector('#analysisPeriod')?.addEventListener('change', (event) => { state.analysisPeriod = event.target.value; renderAll(); });
+      block.querySelector('#printAnalysisBtn')?.addEventListener('click', () => { document.body.classList.add('print-analysis'); window.print(); setTimeout(() => document.body.classList.remove('print-analysis'), 500); });
+    }
+
+    function analysisNavigation() {
+      const nav = document.createElement('nav'); nav.className = 'analysis-page-nav no-print'; nav.setAttribute('aria-label', 'Analyseseiten');
+      const pages = { overview: 'Übersicht', rhythm: 'Rhythmus', training: 'Training', body: 'Körper & Messqualität' };
+      nav.innerHTML = Object.entries(pages).map(([key, label]) => `<button type="button" class="${state.analysisView === key ? 'active' : ''}" data-analysis-view="${key}">${label}</button>`).join('');
+      nav.querySelectorAll('[data-analysis-view]').forEach((button) => button.addEventListener('click', () => { state.analysisView = button.dataset.analysisView; renderAll(); }));
+      return nav;
+    }
+
+    function insightCard(title, body, note = '') { return `<article class="insight-card"><h3>${escapeHtml(title)}</h3>${body}${note ? `<p class="insight-note">${escapeHtml(note)}</p>` : ''}</article>`; }
+    function evidenceValue(result) { return result.count >= 3 ? `${analysisNumber(result.average, 2, true)} kg/Woche` : 'Noch nicht belastbar'; }
+
+    function renderAnalysisInsights(view) {
+      const block = document.createElement('section'); block.className = 'block analysis-insights';
+      if (view === 'rhythm') {
+        const fingerprint = buildWeekFingerprint(); const plateaus = [buildPlateauWindow(7), buildPlateauWindow(21)]; const usable = fingerprint.filter((day) => day.count >= 3 && day.average !== null);
+        const strongest = [...usable].sort((a,b) => a.average - b.average).slice(0, 3).map((day) => day.name).join(', ');
+        block.innerHTML = `<div class="analysis-head"><div><h2>Dein Wochenrhythmus</h2><div class="small">Persönliche Muster relativ zu deinem Gewichtstrend</div></div>${analysisControlMarkup()}</div><div class="insight-grid">
+          ${insightCard('Wochen-Fingerabdruck', `<div class="fingerprint">${fingerprint.map((day) => `<div><span>${day.name}</span><strong>${day.count >= 3 ? `${analysisNumber(day.average, 2, true)} kg` : '---'}</strong><small>${day.count} Messungen</small></div>`).join('')}</div><p>${usable.length >= 4 ? `Deine niedrigsten Abweichungen vom Trend zeigen sich typischerweise an: ${escapeHtml(strongest)}.` : 'Für ein Wochenmuster brauchen mindestens vier Wochentage je drei Messungen.'}</p>`, 'Ab 3 Messungen pro Wochentag angezeigt; belastbarer wird das Muster ab etwa 8–12 Messungen.')}
+          ${insightCard('Plateau-Status', `<div class="plateau-windows">${plateaus.map((plateau) => `<div><span>${plateau.days} Tage</span><strong>${escapeHtml(plateau.state)}</strong><small>${escapeHtml(plateau.text)}</small></div>`).join('')}</div>`, '7 Tage zeigen die kurzfristige Lage; erst 21 ruhige Tage können auf ein mögliches echtes Plateau hindeuten.')}</div>`;
+      } else if (view === 'training') {
+        const response = buildTrainingResponse(); const comparisons = buildWeeklyComparisons(); const additionalResponse = buildAdditionalTrainingResponse();
+        const combinedTrainingResponse = {
+          label: 'Alle Belastungen',
+          horizons: [1, 2, 3].map((days) => {
+            const matching = response.map((group) => group.horizons.find((item) => item.days === days)).filter(Boolean);
+            const count = matching.reduce((sum, item) => sum + Number(item.count || 0), 0);
+            const weightedSum = matching.reduce((sum, item) => sum + (Number.isFinite(item.average) ? item.average * item.count : 0), 0);
+            return { days, count, average: count > 0 ? weightedSum / count : null };
+          })
+        };
+        const responseWithSummary = [...response, combinedTrainingResponse];
+        const groupRows = (groups) => groups.map((group) => `<div class="result-row"><span>${escapeHtml(group.label)}</span><strong>${evidenceValue(group.result)}</strong><small>${group.result.count} vollständige Wochen · ${evidenceLevel(group.result.count).label}</small></div>`).join('');
+        block.innerHTML = `<div class="analysis-head"><div><h2>Training & Gewichtsverlauf</h2><div class="small">Beobachtete Zusammenhänge – keine Ursache-Wirkung-Aussagen</div></div>${analysisControlMarkup()}</div><div class="insight-grid">
+          ${insightCard('Was passiert nach meinem Training?', responseWithSummary.map((group) => `<div class="training-response ${group === combinedTrainingResponse ? 'training-response-summary' : ''}"><strong>${group.label}</strong>${group.horizons.map((h) => `<div><span>${h.days === 1 ? 'Folgetag' : `nach ${h.days * 24} h`}</span><b>${h.count >= 3 ? `${analysisNumber(h.average, 2, true)} kg` : '---'}</b><small>${h.count} Vergleiche · ${evidenceLevel(h.count).label}</small></div>`).join('')}</div>`).join(''), 'Abweichung vom persönlichen Gewichtstrend: Plus bedeutet oberhalb, Minus unterhalb des erwarteten Trends. Die fünf Belastungsstufen werden getrennt ausgewertet; „Alle Belastungen“ fasst sie nach Vergleichszahl gewichtet zusammen.')}
+          ${insightCard('Planerfüllung nach Wochen', groupRows(comparisons.completion), 'Werte erscheinen ab 3 vollständigen Wochen. Stufen: unter 3 zu wenig Daten · 3–4 erste Tendenz · 5–7 eingeschränkt belastbar · 8–11 belastbar · ab 12 gut belastbar. Ernährung und andere Einflüsse werden nicht erfasst.')}
+          ${insightCard('Zusatztraining & Gewichtsverlauf', `<p><strong>${additionalResponse.entries}</strong> einzelne Zusatztrainings im Zeitraum</p><div class="training-response single"><strong>Alle Zusatztrainings</strong>${additionalResponse.horizons.map((h) => `<div><span>${h.days === 1 ? 'Folgetag' : `nach ${h.days * 24} h`}</span><b>${h.count >= 3 ? `${analysisNumber(h.average, 2, true)} kg` : '---'}</b><small>${h.count} Vergleiche · ${evidenceLevel(h.count).label}</small></div>`).join('')}</div>`, 'Plus bedeutet oberhalb, Minus unterhalb des persönlichen Gewichtstrends. Jede zusätzliche Einheit wird einzeln berücksichtigt.')}</div>`;
+      } else {
+        const body = buildBodyInsights();
+        const relationValue = (value, mode) => value === null ? '---' : mode === 'ratio' ? analysisNumber(value, 3) : `${analysisNumber(value, 1, true)} cm`;
+        block.innerHTML = `<div class="analysis-head"><div><h2>Körper & Messqualität</h2><div class="small">Formveränderung und automatische Plausibilitätsprüfung</div></div>${analysisControlMarkup()}</div><div class="insight-grid">
+          ${insightCard('Zentimeter pro 5 kg', body.ratios.map((item) => `<div class="result-row"><span>${escapeHtml(item.name)}</span><strong>${item.points.length < 2 ? 'Zu wenig Messungen' : item.perFive === null ? 'Nicht berechenbar' : `${analysisNumber(item.perFive, 1, true)} ${escapeHtml(item.unit || 'cm')}`}</strong><small>${item.points.length} Messungen${item.change === null ? '' : ` · gesamt ${analysisNumber(item.change, 1, true)} ${escapeHtml(item.unit || 'cm')}`}</small></div>`).join('') || '<p>Noch keine Messwerte außer Gewicht im Zeitraum.</p>', 'Alle Messwerttypen außer Gewicht werden gezeigt. Für „je 5 kg“ sind mindestens zwei Messungen und mehr als 0,5 kg Gewichtsabnahme nötig; die nächste Gewichtsmessung darf höchstens 7 Tage entfernt sein.')}
+          ${insightCard('Veränderung der Körperproportionen', `<div class="relation-table"><div class="relation-head"><span>Verhältnis</span><span>Start</span><span>Aktuell</span><span>Änderung</span></div>${body.relations.map((relation) => `<div><strong>${escapeHtml(relation.label)}</strong><span>${relationValue(relation.start, relation.mode)}</span><span>${relationValue(relation.current, relation.mode)}</span><span>${relationValue(relation.change, relation.mode)}</span></div>`).join('')}</div>`, 'Start und aktuell beziehen sich auf den ausgewählten Zeitraum. Differenzen zeigen die Silhouette in Zentimetern, Quotienten die Proportion unabhängig von der Körpergröße.')}
+          ${insightCard('Messqualität', body.quality.map((item) => `<div class="quality-row quality-${item.severity} ${item.outlier ? 'warning' : ''}"><span>${escapeHtml(item.name)}</span><strong>${escapeHtml(item.level)}</strong><small>${item.count} Messungen · typische Streuung ${item.mad === null ? '---' : `${analysisNumber(item.mad, 1)} cm (${analysisNumber(item.relativeMad, 1)} %)`}${item.outlier ? ' · letzte Messung auffällig – Messposition prüfen' : ''}</small></div>`).join('') || '<p>Noch keine Messreihen.</p>', '0 %: keine · bis 1 %: niedrige · bis 2 %: mittlere · unter 5 %: große Streuung · ab 5 %: nicht auswertbar. Einzelwerte werden nicht automatisch verworfen.')}
+          ${insightCard('Körpermaße im Vergleich zum Gewicht', `<div class="weight-comparison-summary">Gewicht im Zeitraum: <strong>${body.weightChange === null ? '---' : `${analysisNumber(body.weightChange, 1, true)} kg`}</strong> (${body.weightPercent === null ? '---' : `${analysisNumber(body.weightPercent, 1, true)} %`})</div><div class="body-weight-table"><div class="relation-head"><span>Körpermaß</span><span>Änderung</span><span>Relativ</span><span>je 5 kg</span></div>${body.weightComparisons.map((item, index) => `<div><strong>${index === 0 && item.percent !== null ? '<i class="movement-rank">stärkste</i>' : ''}${escapeHtml(item.name)}</strong><span>${item.change === null ? '---' : `${analysisNumber(item.change, 1, true)} cm`}</span><span>${item.percent === null ? '---' : `${analysisNumber(item.percent, 1, true)} %`}</span><span>${item.perFive === null ? '---' : `${analysisNumber(item.perFive, 1, true)} cm`}</span></div>`).join('')}</div>`, 'Die Tabelle ist nach der stärksten relativen Veränderung des Körpermaßes sortiert.')}</div>`;
+      }
+      bindAnalysisControls(block);
+      return block;
+    }
+
     function renderAnalysis() {
       const analysis = buildAnalysis();
       const generatedAt = new Date();
@@ -3743,8 +4074,7 @@
             <div class="exception-list">${(data.trainingExceptions || []).map((item) => `<div><span>${escapeHtml(item.dateFrom)} bis ${escapeHtml(item.dateTo)} · ${escapeHtml(exceptionReasonLabel(item.reason))}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</span><button type="button" data-delete-exception="${Number(item.id)}">Löschen</button></div>`).join('') || '<div class="small">Keine Ausnahmen erfasst.</div>'}</div>
           </details>`}
       `;
-      block.querySelector('#analysisPeriod')?.addEventListener('change', (event) => { state.analysisPeriod = event.target.value; renderAll(); });
-      block.querySelector('#printAnalysisBtn')?.addEventListener('click', () => { document.body.classList.add('print-analysis'); window.print(); setTimeout(() => document.body.classList.remove('print-analysis'), 500); });
+      bindAnalysisControls(block);
       block.querySelector('#exceptionForm')?.addEventListener('submit', async (event) => {
         event.preventDefault();
         const form = new FormData(event.currentTarget);
@@ -3786,9 +4116,10 @@
       }
 
       if (CURRENT_PAGE === 'analysis') {
-        app.appendChild(renderAnalysis());
+        app.appendChild(analysisNavigation());
+        app.appendChild(state.analysisView === 'overview' ? renderAnalysis() : renderAnalysisInsights(state.analysisView));
         renderDeeplinkList();
-        maybeShowMotivation();
+        if (state.analysisView === 'overview') maybeShowMotivation();
         return;
       }
 

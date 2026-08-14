@@ -83,7 +83,11 @@ function buildUserSharePictureDir(int $userId): string {
 function requireAuthenticatedUserId(): int {
     if (!isset($_SESSION['user_id']) || !is_numeric($_SESSION['user_id'])) {
         http_response_code(401);
-        outputJson(['ok' => false, 'error' => 'Nicht angemeldet']);
+        outputJson([
+            'ok' => false,
+            'error' => !empty($_SESSION['session_expired']) ? 'Sitzung abgelaufen' : 'Nicht angemeldet',
+            'code' => !empty($_SESSION['session_expired']) ? 'session_expired' : 'not_authenticated',
+        ]);
         exit;
     }
 

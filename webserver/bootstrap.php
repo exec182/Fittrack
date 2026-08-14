@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+const SESSION_LIFETIME_SECONDS = 604800; // 7 days
+
 function requestIsHttps(): bool
 {
     return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
@@ -13,11 +15,32 @@ function startSecureSession(): void
     if (session_status() === PHP_SESSION_ACTIVE) return;
     ini_set('session.use_strict_mode', '1');
     ini_set('session.use_only_cookies', '1');
+    ini_set('session.gc_maxlifetime', (string)SESSION_LIFETIME_SECONDS);
     session_set_cookie_params([
-        'lifetime' => 0, 'path' => '/', 'domain' => '',
+        'lifetime' => SESSION_LIFETIME_SECONDS, 'path' => '/', 'domain' => '',
         'secure' => requestIsHttps(), 'httponly' => true, 'samesite' => 'Lax',
     ]);
     session_start();
+
+    if (isset($_SESSION['user_id'])) {
+        $expiresAt = (int)($_SESSION['expires_at'] ?? 0);
+        if ($expiresAt > 0 && $expiresAt <= time()) {
+            unset($_SESSION['user_id'], $_SESSION['nick'], $_SESSION['expires_at']);
+            $_SESSION['session_expired'] = true;
+        } else {
+            $_SESSION['expires_at'] = time() + SESSION_LIFETIME_SECONDS;
+            header('X-Session-Expires-At: ' . (string)$_SESSION['expires_at']);
+        }
+    }
+}
+
+function establishAuthenticatedSession(int $userId, string $nick): void
+{
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = $userId;
+    $_SESSION['nick'] = $nick;
+    $_SESSION['expires_at'] = time() + SESSION_LIFETIME_SECONDS;
+    unset($_SESSION['session_expired']);
 }
 
 function sendSecurityHeaders(): void
