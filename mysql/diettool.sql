@@ -84,9 +84,12 @@ CREATE TABLE `deeplink_access` (
   `id` int(11) NOT NULL,
   `user_id` int(11) NOT NULL,
   `token` varchar(128) NOT NULL,
+  `note_text` varchar(255) DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT current_timestamp(),
   `expires_at` datetime DEFAULT NULL,
-  `disabled_at` datetime DEFAULT NULL
+  `disabled_at` datetime DEFAULT NULL,
+  `access_count` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `last_accessed_at` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 

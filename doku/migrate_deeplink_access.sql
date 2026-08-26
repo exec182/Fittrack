@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS `deeplink_access` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `expires_at` DATETIME NULL,
   `disabled_at` DATETIME NULL,
+  `access_count` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  `last_accessed_at` DATETIME NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_deeplink_token` (`token`),
   KEY `idx_deeplink_user_created` (`user_id`, `created_at`),

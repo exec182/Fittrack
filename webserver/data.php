@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/invitation_helpers.php';
 ini_set('display_errors', '0');
 ini_set('html_errors', '0');
 header('Content-Type: application/json; charset=utf-8');
@@ -296,6 +297,24 @@ function ensureTrainingEntryTable(mysqli $mysqli): void {
     }
 }
 
+function ensureDeeplinkSchema(mysqli $mysqli): void {
+    if (!doesColumnExist($mysqli, 'deeplink_access', 'note_text')) {
+        if (!$mysqli->query('ALTER TABLE `deeplink_access` ADD COLUMN `note_text` VARCHAR(255) NULL AFTER `token`')) {
+            throw new RuntimeException('Konnte Deeplink-Notizfeld nicht anlegen: ' . $mysqli->error);
+        }
+    }
+    if (!doesColumnExist($mysqli, 'deeplink_access', 'access_count')) {
+        if (!$mysqli->query('ALTER TABLE `deeplink_access` ADD COLUMN `access_count` BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER `disabled_at`')) {
+            throw new RuntimeException('Konnte Deeplink-Zugriffszaehler nicht anlegen: ' . $mysqli->error);
+        }
+    }
+    if (!doesColumnExist($mysqli, 'deeplink_access', 'last_accessed_at')) {
+        if (!$mysqli->query('ALTER TABLE `deeplink_access` ADD COLUMN `last_accessed_at` DATETIME NULL AFTER `access_count`')) {
+            throw new RuntimeException('Konnte letzten Deeplink-Zugriff nicht anlegen: ' . $mysqli->error);
+        }
+    }
+}
+
 function ensureAnalysisSchema(mysqli $mysqli): void {
     ensureTrainingEntryTable($mysqli);
     foreach (['birthdate' => 'DATE NULL', 'gender' => 'VARCHAR(20) NULL', 'onboarding_completed_at' => 'DATETIME NULL'] as $column => $definition) {
@@ -322,10 +341,21 @@ $dbName = $dbConfig['name'];
 
 $isReadOnlyShare = false;
 $shareToken = normalizeDeeplinkToken((string)($_GET['share'] ?? ''));
+$adminUserId = (int)($_GET['admin_user_id'] ?? 0);
 $userId = null;
 $viewerNick = isset($_SESSION['nick']) ? (string)$_SESSION['nick'] : '';
 
-if ($shareToken !== '') {
+if ($adminUserId > 0 && !empty($_SESSION['fitadmin_authenticated'])) {
+    $adminMysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
+    $adminMysqli->set_charset('utf8mb4');
+    $adminStmt = $adminMysqli->prepare('SELECT nick FROM `user` WHERE id = ? LIMIT 1');
+    $adminStmt->bind_param('i', $adminUserId); $adminStmt->execute();
+    $adminResult = $adminStmt->get_result();
+    if (!$adminResult || $adminResult->num_rows === 0) { http_response_code(404); outputJson(['ok'=>false,'error'=>'User nicht gefunden']); exit; }
+    $userId = $adminUserId;
+    $viewerNick = (string)$adminResult->fetch_assoc()['nick'];
+    $isReadOnlyShare = true;
+} elseif ($shareToken !== '') {
     try {
         $shareMysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
         $shareMysqli->set_charset('utf8mb4');
@@ -366,9 +396,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input = json_decode($rawBody, true);
     $action = is_array($input) ? ($input['action'] ?? '') : '';
 
-    if (!is_array($input) || !in_array($action, ['save_training', 'save_training_plan', 'save_measurement', 'save_profile', 'save_goal_reward', 'create_goal', 'update_goal', 'delete_goal', 'create_deeplink', 'disable_deeplink', 'save_share_picture', 'save_training_exception', 'delete_training_exception'], true)) {
+    if (!is_array($input) || !in_array($action, ['save_training', 'save_training_plan', 'save_measurement', 'save_profile', 'save_goal_reward', 'create_goal', 'update_goal', 'delete_goal', 'create_deeplink', 'create_registration_invite', 'update_deeplink', 'disable_deeplink', 'delete_deeplink', 'delete_inactive_deeplinks', 'save_share_picture', 'save_training_exception', 'delete_training_exception'], true)) {
         http_response_code(400);
         outputJson(['ok' => false, 'error' => 'Ungueltige Anfrage']);
+        exit;
+    }
+
+    if ($action === 'create_registration_invite') {
+        try {
+            $appConfig = require __DIR__ . '/app_config.php';
+            if (empty($appConfig['allow_registration_invites'])) {
+                http_response_code(403);
+                outputJson(['ok' => false, 'error' => 'Das Erzeugen von Einladungslinks ist deaktiviert.']);
+                exit;
+            }
+            $dsn = "mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4";
+            $pdo = new PDO($dsn, $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $invite = createRegistrationInvite($pdo, $userId, (string)($input['note'] ?? ''), (string)($input['expiresAt'] ?? ''));
+            outputJson(['ok' => true, 'invite' => $invite]);
+        } catch (InvalidArgumentException $e) {
+            http_response_code(400);
+            outputJson(['ok' => false, 'error' => $e->getMessage()]);
+        } catch (Throwable $e) {
+            http_response_code(500);
+            outputJson(['ok' => false, 'error' => 'Einladungslink konnte nicht erzeugt werden.']);
+        }
         exit;
     }
 
@@ -705,7 +757,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'save_training_plan') {
         $entries = $input['entries'] ?? [];
-        $validFromInput = trim((string)($input['validFrom'] ?? ''));
 
         if (!is_array($entries) || count($entries) === 0) {
             http_response_code(422);
@@ -713,8 +764,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $validFromTimestamp = $validFromInput !== '' ? strtotime($validFromInput) : false;
-        $validFrom = $validFromTimestamp !== false ? date('Y-m-d H:i:s', $validFromTimestamp) : date('Y-m-d H:i:s');
+        $validFrom = date('Y-m-d 00:00:00');
 
         $normalizedEntries = [];
         foreach ($entries as $entry) {
@@ -729,6 +779,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $normalizedEntries[] = [
+                'id' => max(0, (int)($entry['id'] ?? 0)),
                 'day' => $weekdayName,
                 'focus' => $focusText,
                 'duration' => $durationText,
@@ -749,19 +800,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $mysqli->begin_transaction();
 
+            $activeEntries = [];
+            $activeStmt = $mysqli->prepare(
+                'SELECT `id`, `weekday_name`, `focus_text`, `duration_text`, `note_text`
+                 FROM `training_plan_entry`
+                 WHERE `user_id` = ? AND `deactivated_at` IS NULL
+                 FOR UPDATE'
+            );
+            if (!$activeStmt) {
+                throw new RuntimeException('Aktuellen Plan laden fehlgeschlagen: ' . $mysqli->error);
+            }
+            $activeStmt->bind_param('i', $userId);
+            if (!$activeStmt->execute()) {
+                throw new RuntimeException('Aktuellen Plan laden fehlgeschlagen: ' . $activeStmt->error);
+            }
+            $activeResult = $activeStmt->get_result();
+            while ($activeResult && ($activeRow = $activeResult->fetch_assoc())) {
+                $activeEntries[(int)$activeRow['id']] = $activeRow;
+            }
+
             $deactivateStmt = $mysqli->prepare(
                 'UPDATE `training_plan_entry`
                  SET `deactivated_at` = ?
-                 WHERE `user_id` = ?
-                   AND `deactivated_at` IS NULL'
+                 WHERE `id` = ? AND `user_id` = ? AND `deactivated_at` IS NULL'
             );
             if (!$deactivateStmt) {
                 throw new RuntimeException('Deaktivierung des alten Plans fehlgeschlagen: ' . $mysqli->error);
-            }
-
-            $deactivateStmt->bind_param('si', $validFrom, $userId);
-            if (!$deactivateStmt->execute()) {
-                throw new RuntimeException('Alten Plan deaktivieren fehlgeschlagen: ' . $deactivateStmt->error);
             }
 
             $insertPlanStmt = $mysqli->prepare(
@@ -773,7 +837,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Plan-Insert vorbereiten fehlgeschlagen: ' . $mysqli->error);
             }
 
+            $submittedIds = [];
+            $changedEntryCount = 0;
             foreach ($normalizedEntries as $entry) {
+                $entryId = $entry['id'];
+                if ($entryId > 0) {
+                    if (isset($submittedIds[$entryId]) || !isset($activeEntries[$entryId])) {
+                        throw new InvalidArgumentException('Ein Trainingsplan-Eintrag ist nicht mehr aktuell');
+                    }
+                    $submittedIds[$entryId] = true;
+                    $activeEntry = $activeEntries[$entryId];
+                    $unchanged = $activeEntry['weekday_name'] === $entry['day']
+                        && $activeEntry['focus_text'] === $entry['focus']
+                        && $activeEntry['duration_text'] === $entry['duration']
+                        && $activeEntry['note_text'] === $entry['note'];
+                    if ($unchanged) {
+                        continue;
+                    }
+                    $deactivateStmt->bind_param('sii', $validFrom, $entryId, $userId);
+                    if (!$deactivateStmt->execute()) {
+                        throw new RuntimeException('Plan-Eintrag deaktivieren fehlgeschlagen: ' . $deactivateStmt->error);
+                    }
+                    $changedEntryCount++;
+                } else {
+                    $changedEntryCount++;
+                }
+
                 $insertPlanStmt->bind_param(
                     'isssss',
                     $userId,
@@ -789,11 +878,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
+            foreach (array_keys($activeEntries) as $activeEntryId) {
+                if (isset($submittedIds[$activeEntryId])) {
+                    continue;
+                }
+                $deactivateStmt->bind_param('sii', $validFrom, $activeEntryId, $userId);
+                if (!$deactivateStmt->execute()) {
+                    throw new RuntimeException('Entfernten Plan-Eintrag deaktivieren fehlgeschlagen: ' . $deactivateStmt->error);
+                }
+                $changedEntryCount++;
+            }
+
             $mysqli->commit();
 
             outputJson([
                 'ok' => true,
-                'message' => 'Trainingsplan gespeichert'
+                'message' => $changedEntryCount > 0 ? 'Trainingsplan gespeichert' : 'Keine Aenderungen erkannt',
+                'changedEntries' => $changedEntryCount
             ]);
             exit;
         } catch (InvalidArgumentException $e) {
@@ -816,7 +917,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'create_deeplink') {
         $expiresAtInput = trim((string)($input['expiresAt'] ?? ''));
+        $note = trim((string)($input['note'] ?? ''));
         $expiresAt = null;
+
+        if (mb_strlen($note) > 255) {
+            http_response_code(422);
+            outputJson(['ok' => false, 'error' => 'Die Notiz darf höchstens 255 Zeichen lang sein']);
+            exit;
+        }
 
         if ($expiresAtInput !== '') {
             $timestamp = strtotime($expiresAtInput);
@@ -832,18 +940,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
             $mysqli->set_charset('utf8mb4');
+            ensureDeeplinkSchema($mysqli);
 
             $token = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
             $insertStmt = $mysqli->prepare(
-                "INSERT INTO `deeplink_access` (`user_id`, `token`, `created_at`, `expires_at`, `disabled_at`)
-                 VALUES (?, ?, NOW(), ?, NULL)"
+                "INSERT INTO `deeplink_access` (`user_id`, `token`, `note_text`, `created_at`, `expires_at`, `disabled_at`)
+                 VALUES (?, ?, NULLIF(?, ''), NOW(), ?, NULL)"
             );
 
             if (!$insertStmt) {
                 throw new RuntimeException('Deeplink-Insert nicht vorbereitet: ' . $mysqli->error);
             }
 
-            $insertStmt->bind_param('iss', $userId, $token, $expiresAt);
+            $insertStmt->bind_param('isss', $userId, $token, $note, $expiresAt);
             if (!$insertStmt->execute()) {
                 throw new RuntimeException('Deeplink speichern fehlgeschlagen: ' . $insertStmt->error);
             }
@@ -1158,6 +1267,99 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($durationMinutes <= 0 && preg_match('/^(\d{1,2}):(\d{2})$/', $duration, $durationParts)) {
         $durationMinutes = ((int)$durationParts[1] * 60) + (int)$durationParts[2];
     }
+
+    if ($action === 'delete_deeplink' || $action === 'delete_inactive_deeplinks') {
+        try {
+            $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
+            $mysqli->set_charset('utf8mb4');
+
+            if ($action === 'delete_deeplink') {
+                $deeplinkId = (int)($input['deeplinkId'] ?? 0);
+                if ($deeplinkId <= 0) {
+                    http_response_code(422);
+                    outputJson(['ok' => false, 'error' => 'Bitte gültigen Deeplink auswählen']);
+                    exit;
+                }
+                $deleteStmt = $mysqli->prepare(
+                    "DELETE FROM `deeplink_access`
+                     WHERE `id` = ? AND `user_id` = ?
+                       AND (`disabled_at` IS NOT NULL OR (`expires_at` IS NOT NULL AND `expires_at` <= NOW()))"
+                );
+                $deleteStmt->bind_param('ii', $deeplinkId, $userId);
+            } else {
+                $deleteStmt = $mysqli->prepare(
+                    "DELETE FROM `deeplink_access`
+                     WHERE `user_id` = ?
+                       AND (`disabled_at` IS NOT NULL OR (`expires_at` IS NOT NULL AND `expires_at` <= NOW()))"
+                );
+                $deleteStmt->bind_param('i', $userId);
+            }
+
+            if (!$deleteStmt->execute()) throw new RuntimeException('Deeplinks löschen fehlgeschlagen: ' . $deleteStmt->error);
+            outputJson([
+                'ok' => true,
+                'deletedCount' => $deleteStmt->affected_rows,
+                'message' => $deleteStmt->affected_rows === 1 ? 'Deeplink gelöscht' : $deleteStmt->affected_rows . ' Deeplinks gelöscht'
+            ]);
+            exit;
+        } catch (Throwable $e) {
+            http_response_code(500);
+            outputJson(['ok' => false, 'error' => 'Deeplink konnte nicht gelöscht werden']);
+            exit;
+        }
+    }
+
+    if ($action === 'update_deeplink') {
+        $deeplinkId = (int)($input['deeplinkId'] ?? 0);
+        $note = trim((string)($input['note'] ?? ''));
+        $expiresAtInput = trim((string)($input['expiresAt'] ?? ''));
+        $expiresAt = null;
+
+        if ($deeplinkId <= 0 || mb_strlen($note) > 255) {
+            http_response_code(422);
+            outputJson(['ok' => false, 'error' => 'Deeplink oder Notiz ist ungültig']);
+            exit;
+        }
+        if ($expiresAtInput !== '') {
+            $timestamp = strtotime($expiresAtInput);
+            if ($timestamp === false || $timestamp <= time()) {
+                http_response_code(422);
+                outputJson(['ok' => false, 'error' => 'Ablaufzeit muss in der Zukunft liegen oder leer sein']);
+                exit;
+            }
+            $expiresAt = date('Y-m-d H:i:s', $timestamp);
+        }
+
+        try {
+            $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
+            $mysqli->set_charset('utf8mb4');
+            ensureDeeplinkSchema($mysqli);
+            $updateStmt = $mysqli->prepare(
+                "UPDATE `deeplink_access`
+                 SET `note_text` = NULLIF(?, ''), `expires_at` = ?
+                 WHERE `id` = ? AND `user_id` = ?"
+            );
+            if (!$updateStmt) throw new RuntimeException('Deeplink-Aktualisierung nicht vorbereitet: ' . $mysqli->error);
+            $updateStmt->bind_param('ssii', $note, $expiresAt, $deeplinkId, $userId);
+            if (!$updateStmt->execute()) throw new RuntimeException('Deeplink aktualisieren fehlgeschlagen: ' . $updateStmt->error);
+            if ($updateStmt->affected_rows < 1) {
+                $existsStmt = $mysqli->prepare('SELECT id FROM `deeplink_access` WHERE id = ? AND user_id = ? LIMIT 1');
+                $existsStmt->bind_param('ii', $deeplinkId, $userId);
+                $existsStmt->execute();
+                if (!$existsStmt->get_result()->fetch_assoc()) {
+                    http_response_code(404);
+                    outputJson(['ok' => false, 'error' => 'Deeplink nicht gefunden']);
+                    exit;
+                }
+            }
+            outputJson(['ok' => true, 'message' => 'Deeplink aktualisiert']);
+            exit;
+        } catch (Throwable $e) {
+            http_response_code(500);
+            outputJson(['ok' => false, 'error' => 'Deeplink konnte nicht aktualisiert werden']);
+            exit;
+        }
+    }
     if ($durationMinutes <= 0 && preg_match('/(\d+)/', $duration, $durationNumber)) {
         $durationMinutes = (int)$durationNumber[1];
     }
@@ -1451,8 +1653,9 @@ try {
 
     $deeplinkRows = [];
     if (!$isReadOnlyShare) {
+        ensureDeeplinkSchema($mysqli);
         $deeplinkStmt = $mysqli->prepare(
-            "SELECT id, token, created_at, expires_at, disabled_at
+            "SELECT id, token, note_text, created_at, expires_at, disabled_at, access_count, last_accessed_at
              FROM `deeplink_access`
              WHERE user_id = ?
              ORDER BY created_at DESC"
@@ -1476,9 +1679,12 @@ try {
                     $deeplinkRows[] = [
                         'id' => (int)$row['id'],
                         'token' => (string)$row['token'],
+                        'note' => trim((string)($row['note_text'] ?? '')),
                         'createdAt' => $row['created_at'],
                         'expiresAt' => $row['expires_at'],
                         'disabledAt' => $row['disabled_at'],
+                        'accessCount' => (int)$row['access_count'],
+                        'lastAccessedAt' => $row['last_accessed_at'],
                         'status' => $status
                     ];
                 }

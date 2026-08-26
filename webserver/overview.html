@@ -29,14 +29,16 @@
   data-csrf-token="<?php echo htmlspecialchars($csrfToken ?? '', ENT_QUOTES, 'UTF-8'); ?>"
   data-read-only="<?php echo !empty($isReadOnlyView) ? '1' : '0'; ?>"
   data-share-token="<?php echo htmlspecialchars((string)($currentViewShareToken ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
+  data-admin-user-id="<?php echo !empty($isAdminView) ? (int)($sharedUserId ?? 0) : 0; ?>"
   data-asset-version="<?php echo htmlspecialchars($assetVersion, ENT_QUOTES, 'UTF-8'); ?>"
   data-page="<?php echo htmlspecialchars($currentPage ?? 'overview', ENT_QUOTES, 'UTF-8'); ?>"
   data-session-expires-at="<?php echo empty($isReadOnlyView) ? (int)($_SESSION['expires_at'] ?? 0) : 0; ?>"
+  data-registration-invites-enabled="<?php echo !empty($allowRegistrationInvites) ? '1' : '0'; ?>"
 >
   <div class="top-strip">
     <div class="top-strip-left">
       <?php if (!empty($isReadOnlyView)): ?>
-        Deeplink-Ansicht von <strong><?php echo htmlspecialchars($currentViewUserNick ?? 'Unbekannt', ENT_QUOTES, 'UTF-8'); ?></strong>
+        <?php echo !empty($isAdminView) ? 'Admin-Ansicht von' : 'Deeplink-Ansicht von'; ?> <strong><?php echo htmlspecialchars($currentViewUserNick ?? 'Unbekannt', ENT_QUOTES, 'UTF-8'); ?></strong>
       <?php else: ?>
         Angemeldet als <strong><?php echo htmlspecialchars($currentViewUserNick ?? ($_SESSION['nick'] ?? 'Unbekannt'), ENT_QUOTES, 'UTF-8'); ?></strong>
       <?php endif; ?>
@@ -57,6 +59,10 @@
             </div>
             <form id="deeplinkCreateForm" class="form-grid">
               <div class="field">
+                <label for="deeplinkNote">Notiz (optional)</label>
+                <input id="deeplinkNote" name="note" type="text" maxlength="255" placeholder="z. B. Link für Trainerin" />
+              </div>
+              <div class="field">
                 <label for="deeplinkExpiresAt">Ablaufdatum (optional)</label>
                 <input id="deeplinkExpiresAt" name="expiresAt" type="datetime-local" />
               </div>
@@ -66,6 +72,16 @@
             </form>
             <div class="small" id="deeplinkNotice"></div>
             <div class="deeplink-list" id="deeplinkList"></div>
+            <?php if (!empty($allowRegistrationInvites)): ?>
+              <hr />
+              <strong>Person einladen</strong>
+              <form id="registrationInviteCreateForm" class="form-grid">
+                <div class="field"><label for="registrationInviteNote">Notiz (optional)</label><input id="registrationInviteNote" name="note" maxlength="255" /></div>
+                <div class="field"><label for="registrationInviteExpiresAt">Ablaufdatum (optional)</label><input id="registrationInviteExpiresAt" name="expiresAt" type="datetime-local" /></div>
+                <button class="btn-primary" type="submit">Einladungslink erzeugen</button>
+              </form>
+              <div class="small" id="registrationInviteNotice">Der Link ist einmalig nutzbar.</div>
+            <?php endif; ?>
           </div>
         </div>
         <button class="strip-btn" id="openPasswordModal" type="button">Passwort ändern</button>
@@ -76,7 +92,7 @@
         </form>
         <button class="strip-btn" id="sharePictureBtn" type="button">Share-Picture</button>
       <?php else: ?>
-        <a class="strip-btn" href="index.php">Zum Login</a>
+        <a class="strip-btn" href="<?php echo !empty($isAdminView) ? '/fitadmin/' : 'index.php'; ?>"><?php echo !empty($isAdminView) ? 'Zur Admin-Seite' : 'Zum Login'; ?></a>
       <?php endif; ?>
     </div>
   </div>
@@ -94,6 +110,8 @@
   <?php endif; ?>
 
   <div class="container" id="app"></div>
+
+  <button class="back-to-top" id="backToTop" type="button" aria-label="Zurück nach oben" title="Zurück nach oben">↑</button>
 
   <section class="modal-backdrop hidden" id="passwordModal">
     <div class="modal-card" role="dialog" aria-modal="true" aria-label="Passwort ändern">

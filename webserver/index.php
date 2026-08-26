@@ -1,9 +1,11 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/invitation_helpers.php';
 
 $appConfig = require __DIR__ . '/app_config.php';
 $allowUserRegistration = !empty($appConfig['allow_user_registration']);
+$allowRegistrationInvites = !empty($appConfig['allow_registration_invites']);
 
 $csrfToken = ensureCsrfToken();
 
@@ -39,14 +41,32 @@ $registrationMeasurementTypes = $db->query(
      ORDER BY messurement"
 )->fetchAll();
 
+ensureRegistrationInviteSchema($db);
+$inviteToken = strtolower(trim((string)($_GET['invite'] ?? $_POST['invite_token'] ?? '')));
+$validRegistrationInvite = $inviteToken !== '' ? findValidRegistrationInvite($db, $inviteToken) : null;
+$canRegister = $allowUserRegistration || $validRegistrationInvite !== null;
+
 $isSharedView = false;
+$isAdminView = false;
 $sharedUserId = null;
 $sharedNick = null;
 $shareToken = trim((string)($_GET['share'] ?? ''));
+$adminViewUserId = (int)($_GET['admin_view_user'] ?? 0);
 
-if ($shareToken !== '') {
+if ($adminViewUserId > 0 && !empty($_SESSION['fitadmin_authenticated'])) {
+    $adminUserStmt = $db->prepare('SELECT id, nick FROM `user` WHERE id = ? LIMIT 1');
+    $adminUserStmt->execute([$adminViewUserId]);
+    if ($adminUser = $adminUserStmt->fetch()) {
+        $isSharedView = true;
+        $isAdminView = true;
+        $sharedUserId = (int)$adminUser['id'];
+        $sharedNick = (string)$adminUser['nick'];
+    }
+}
+
+if (!$isAdminView && $shareToken !== '') {
     $shareStmt = $db->prepare(
-        "SELECT dl.user_id, u.nick
+        "SELECT dl.id, dl.user_id, u.nick
          FROM `deeplink_access` dl
          JOIN `user` u ON u.id = dl.user_id
          WHERE dl.token = ?
@@ -58,6 +78,12 @@ if ($shareToken !== '') {
     $shareRow = $shareStmt->fetch();
 
     if ($shareRow) {
+        $shareAccessStmt = $db->prepare(
+            'UPDATE `deeplink_access`
+             SET access_count = access_count + 1, last_accessed_at = NOW()
+             WHERE id = ?'
+        );
+        $shareAccessStmt->execute([(int)$shareRow['id']]);
         $isSharedView = true;
         $sharedUserId = (int)$shareRow['user_id'];
         $sharedNick = (string)$shareRow['nick'];
@@ -169,7 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
     }
     elseif ($action === 'register') {
-        if (!$allowUserRegistration) {
+        if (!$canRegister) {
             http_response_code(403);
             $register_error = 'Registrierung ist deaktiviert.';
         } else {
@@ -202,6 +228,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             
             try {
                 $db->beginTransaction();
+                if (!$allowUserRegistration && !findValidRegistrationInvite($db, $inviteToken, true)) {
+                    throw new RuntimeException('Der Einladungslink ist nicht mehr gültig.');
+                }
                 $heightM = ((float)$heightCm) / 100;
                 $stmt = $db->prepare(
                     'INSERT INTO user (nick, password, goalweight, height, birthdate, gender, onboarding_completed_at)
@@ -261,6 +290,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $type = $allowedTypes[$typeId];
                     $label = 'Ziel ' . (string)$type['messurement'];
                     $goalStmt->execute([$newUserId, $typeId, $target, mb_substr($label, 0, 50)]);
+                }
+
+                if ($validRegistrationInvite !== null) {
+                    $inviteStmt = $db->prepare('UPDATE `registration_invite` SET used_at = NOW(), used_by_user_id = ? WHERE token = ? AND used_at IS NULL');
+                    $inviteStmt->execute([$newUserId, $inviteToken]);
+                    if ($inviteStmt->rowCount() !== 1) throw new RuntimeException('Der Einladungslink wurde bereits verwendet.');
                 }
 
                 $db->commit();

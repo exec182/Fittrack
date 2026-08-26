@@ -40,6 +40,62 @@
         .replace(/'/g, '&#039;');
     }
 
+    function renderTrainingMarkdown(value) {
+      const renderInline = (text) => escapeHtml(text)
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+        .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+
+      const lines = String(value ?? '').replace(/\r\n?/g, '\n').split('\n');
+      const output = [];
+      let listType = '';
+      let paragraph = [];
+
+      const closeList = () => {
+        if (!listType) return;
+        output.push(`</${listType}>`);
+        listType = '';
+      };
+      const closeParagraph = () => {
+        if (paragraph.length === 0) return;
+        output.push(`<p>${paragraph.map(renderInline).join('<br />')}</p>`);
+        paragraph = [];
+      };
+
+      lines.forEach((line) => {
+        const heading = line.match(/^\s*(#{1,3})\s+(.+)$/);
+        const unordered = line.match(/^\s*[-+*]\s+(.+)$/);
+        const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+
+        if (!line.trim()) {
+          closeParagraph();
+          closeList();
+        } else if (heading) {
+          closeParagraph();
+          closeList();
+          const level = heading[1].length + 2;
+          output.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+        } else if (unordered || ordered) {
+          closeParagraph();
+          const nextListType = unordered ? 'ul' : 'ol';
+          if (listType !== nextListType) {
+            closeList();
+            listType = nextListType;
+            output.push(`<${listType}>`);
+          }
+          output.push(`<li>${renderInline((unordered || ordered)[1])}</li>`);
+        } else {
+          closeList();
+          paragraph.push(line.trim());
+        }
+      });
+
+      closeParagraph();
+      closeList();
+      return output.join('');
+    }
+
     function jsonPostOptions(payload) {
       if (IS_READ_ONLY_VIEW) {
         throw new Error('Nur-Lese-Modus: Schreiben ist nicht erlaubt');
@@ -128,6 +184,8 @@
     window.setInterval(updateSessionTimeoutNotice, 1000);
 
     function buildDataApiUrl() {
+      const adminUserId = Number(document.body.dataset.adminUserId || 0);
+      if (adminUserId > 0) return `data.php?admin_user_id=${encodeURIComponent(adminUserId)}`;
       if (IS_READ_ONLY_VIEW && SHARE_TOKEN) {
         return `data.php?share=${encodeURIComponent(SHARE_TOKEN)}`;
       }
@@ -137,6 +195,11 @@
     function formatDeeplinkDate(value) {
       if (!value) return 'Kein Ablauf';
       return String(value).replace('T', ' ').slice(0, 16);
+    }
+
+    function formatDeeplinkDateInput(value) {
+      if (!value) return '';
+      return String(value).replace(' ', 'T').slice(0, 16);
     }
 
     function getDeeplinkStatusLabel(status) {
@@ -186,6 +249,7 @@
         return;
       }
 
+      const inactiveCount = deeplinks.filter((item) => String(item.status || 'active') !== 'active').length;
       list.innerHTML = deeplinks.map((item) => {
         const statusClass = getDeeplinkStatusClass(String(item.status || 'active'));
         const statusLabel = getDeeplinkStatusLabel(String(item.status || 'active'));
@@ -198,13 +262,35 @@
             </div>
             <div class="small">Erstellt: ${escapeHtml(formatDeeplinkDate(item.createdAt))}</div>
             <div class="small">Ablauf: ${escapeHtml(formatDeeplinkDate(item.expiresAt))}</div>
+            <div class="small">Zugriffe: ${Number(item.accessCount || 0)}</div>
+            <div class="small">Zuletzt: ${item.lastAccessedAt ? escapeHtml(formatDeeplinkDate(item.lastAccessedAt)) : 'Noch nie'}</div>
+            <div class="small">Notiz: ${escapeHtml(String(item.note || '').trim() || 'Keine Notiz')}</div>
             <div class="deeplink-actions">
               <button class="tiny-btn" type="button" data-copy-deeplink="${escapeHtml(String(item.token || ''))}">Link kopieren</button>
               ${canDisable ? `<button class="tiny-btn warn" type="button" data-disable-deeplink="${Number(item.id)}">Deaktivieren</button>` : ''}
+              ${canDisable ? '' : `<button class="tiny-btn warn" type="button" data-delete-deeplink="${Number(item.id)}">Löschen</button>`}
             </div>
+            <details class="deeplink-edit-details">
+              <summary>Notiz und Ablauf bearbeiten</summary>
+              <form class="form-grid deeplink-edit-form" data-edit-deeplink="${Number(item.id)}">
+                <div class="field">
+                  <label>Notiz</label>
+                  <input name="note" type="text" maxlength="255" value="${escapeHtml(String(item.note || ''))}" placeholder="Optionale Beschreibung" />
+                </div>
+                <div class="field">
+                  <label>Ablaufdatum (leer = kein Ablauf)</label>
+                  <input name="expiresAt" type="datetime-local" value="${escapeHtml(formatDeeplinkDateInput(item.expiresAt))}" />
+                </div>
+                <button class="tiny-btn" type="submit">Änderungen speichern</button>
+              </form>
+            </details>
           </div>
         `;
-      }).join('');
+      }).join('') + (inactiveCount > 0 ? `
+        <div class="deeplink-delete-all">
+          <button class="tiny-btn warn" id="deleteInactiveDeeplinks" type="button">Alle nicht aktiven löschen (${inactiveCount})</button>
+        </div>
+      ` : '');
 
       list.querySelectorAll('[data-copy-deeplink]').forEach((button) => {
         button.addEventListener('click', async () => {
@@ -242,6 +328,58 @@
           }
         });
       });
+
+      list.querySelectorAll('[data-edit-deeplink]').forEach((form) => {
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const deeplinkId = Number(form.getAttribute('data-edit-deeplink') || 0);
+          const formData = new FormData(form);
+          const expiresAtRaw = String(formData.get('expiresAt') || '').trim();
+          try {
+            const response = await fetch(buildDataApiUrl(), jsonPostOptions({
+              action: 'update_deeplink',
+              deeplinkId,
+              note: String(formData.get('note') || '').trim(),
+              expiresAt: expiresAtRaw ? `${expiresAtRaw}:00` : ''
+            }));
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            state.deeplinkNotice = 'Deeplink wurde aktualisiert.';
+            await loadDashboardData();
+          } catch (error) {
+            window.alert(`Deeplink aktualisieren fehlgeschlagen: ${error.message}`);
+          }
+        });
+      });
+
+      list.querySelectorAll('[data-delete-deeplink]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const deeplinkId = Number(button.getAttribute('data-delete-deeplink') || 0);
+          if (!deeplinkId || !window.confirm('Diesen nicht aktiven Deeplink endgültig löschen?')) return;
+          try {
+            const response = await fetch(buildDataApiUrl(), jsonPostOptions({ action: 'delete_deeplink', deeplinkId }));
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            state.deeplinkNotice = 'Deeplink wurde gelöscht.';
+            await loadDashboardData();
+          } catch (error) {
+            window.alert(`Deeplink löschen fehlgeschlagen: ${error.message}`);
+          }
+        });
+      });
+
+      list.querySelector('#deleteInactiveDeeplinks')?.addEventListener('click', async () => {
+        if (!window.confirm(`Alle ${inactiveCount} nicht aktiven Deeplinks endgültig löschen?`)) return;
+        try {
+          const response = await fetch(buildDataApiUrl(), jsonPostOptions({ action: 'delete_inactive_deeplinks' }));
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          state.deeplinkNotice = `${Number(result.deletedCount || 0)} nicht aktive Deeplinks wurden gelöscht.`;
+          await loadDashboardData();
+        } catch (error) {
+          window.alert(`Nicht aktive Deeplinks löschen fehlgeschlagen: ${error.message}`);
+        }
+      });
     }
     const state = {
       window: 'Alles',
@@ -269,6 +407,7 @@
       knownAchievedGoalIds: [],
       recentlyAchievedGoalIds: [],
       goalCelebrationText: '',
+      goalHistoryFilter: '',
       hasLoadedServerData: false,
       deeplinkNotice: '',
       showMeasurementDetail: false,
@@ -380,6 +519,14 @@
       const month = String(now.getMonth() + 1).padStart(2, '0');
       const day = String(now.getDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
+    }
+
+    function inclusiveCalendarWindowStart(referenceTimestamp, days) {
+      if (!Number.isFinite(referenceTimestamp) || !Number.isFinite(days)) return NaN;
+      const start = new Date(referenceTimestamp);
+      start.setHours(0, 0, 0, 0);
+      start.setDate(start.getDate() - Math.max(1, Math.trunc(days)) + 1);
+      return start.getTime();
     }
 
     function buildSharePictureFilename() {
@@ -865,6 +1012,25 @@
         });
     }
 
+    function getTodayTrainingProgress(planEntries = getTrainingPlanEntries()) {
+      const todayIso = getTodayIsoDate();
+      const weekdayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+      const todayName = weekdayNames[new Date().getDay()];
+      const planned = planEntries.filter((entry) => entry.day === todayName);
+      const todayTrainings = (Array.isArray(data.recentTrainingEntries) ? data.recentTrainingEntries : [])
+        .filter((entry) => String(entry.date || '') === todayIso);
+      const completedIds = new Set(todayTrainings
+        .map((entry) => Number(entry.sourcePlanEntryId || 0))
+        .filter((id) => id > 0));
+
+      return {
+        planned: planned.length,
+        completed: planned.filter((entry) => completedIds.has(Number(entry.id))).length,
+        open: planned.filter((entry) => !completedIds.has(Number(entry.id))).length,
+        isCompleted: (entry) => completedIds.has(Number(entry.id))
+      };
+    }
+
     function buildGoalCurrentValueMaps() {
       const latestEntries = Array.isArray(data.latestMeasurementEntries) ? data.latestMeasurementEntries : [];
       const measurementHistory = Array.isArray(data.measurementHistory) ? data.measurementHistory : [];
@@ -921,6 +1087,129 @@
       return { byTypeId, byTypeName };
     }
 
+    function median(numbers) {
+      const sorted = numbers.filter(Number.isFinite).sort((a, b) => a - b);
+      if (!sorted.length) return null;
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+
+    function evaluateCurrentWeight(series, trend) {
+      if (!series.length || !trend) return null;
+      const lastPoint = series[series.length - 1];
+      const delta = lastPoint.weight - trend.valueAt(lastPoint.date.getTime());
+      const residuals = series.map((point) => Math.abs(point.weight - trend.valueAt(point.date.getTime())));
+      // 1,4826 skaliert die robuste Medianabweichung auf eine typische Standardabweichung.
+      // Die Untergrenze verhindert eine Scheingenauigkeit bei sehr glatten oder wenigen Messwerten.
+      const typicalFluctuation = Math.max(0.3, (median(residuals) || 0) * 1.4826);
+      const absoluteDelta = Math.abs(delta);
+      const level = absoluteDelta <= typicalFluctuation
+        ? 'within'
+        : absoluteDelta <= typicalFluctuation * 2
+          ? 'borderline'
+          : 'outside';
+      const labels = { within: 'Im Rahmen', borderline: 'Grenzbereich', outside: 'Außerhalb' };
+      return { delta, typicalFluctuation, level, label: labels[level] };
+    }
+
+    function personalMeasurementCadence(series) {
+      const uniqueTimestamps = [...new Set(series.map((point) => {
+        const date = point.date;
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+      }))].sort((a, b) => a - b);
+      if (uniqueTimestamps.length < 2) return null;
+      const recent = uniqueTimestamps.slice(-13);
+      const intervals = recent.slice(1).map((timestamp, index) => (timestamp - recent[index]) / 86400000).filter((days) => days > 0);
+      const cadenceDays = median(intervals);
+      return Number.isFinite(cadenceDays) ? cadenceDays : null;
+    }
+
+    function formatDurationDays(days) {
+      if (days < 2) return `${Math.round(days * 24)} Stunden`;
+      if (days < 14) return `${days.toFixed(1).replace('.', ',')} Tage`;
+      return `${(days / 7).toFixed(1).replace('.', ',')} Wochen`;
+    }
+
+    function robustForecast(series, targetValue) {
+      const sorted = series
+        .map((point) => ({ value: Number(point.value ?? point.weight), date: new Date(point.date) }))
+        .filter((point) => Number.isFinite(point.value) && Number.isFinite(point.date.getTime()))
+        .sort((a, b) => a.date - b.date);
+      if (sorted.length < 2 || !Number.isFinite(targetValue)) return { text: 'Nicht genug Daten für Prognose' };
+
+      // Mehrere Werte eines Tages werden gemittelt, damit Messtakt und Uhrzeit den Trend nicht verzerren.
+      const byDay = new Map();
+      sorted.forEach((point) => {
+        const key = `${point.date.getFullYear()}-${point.date.getMonth()}-${point.date.getDate()}`;
+        const bucket = byDay.get(key) || { values: [], date: point.date };
+        bucket.values.push(point.value);
+        if (point.date > bucket.date) bucket.date = point.date;
+        byDay.set(key, bucket);
+      });
+      const daily = [...byDay.values()].map((bucket) => ({ value: bucket.values.reduce((sum, value) => sum + value, 0) / bucket.values.length, date: bucket.date }));
+      const lastPoint = daily[daily.length - 1];
+      if (lastPoint.value <= targetValue) return { text: 'Ziel bereits erreicht', weeklyLoss: null, sampleCount: daily.length };
+
+      const windowPoints = (days) => {
+        const start = lastPoint.date.getTime() - days * 86400000;
+        return daily.filter((point) => point.date.getTime() >= start);
+      };
+      const robustFit = (points) => {
+        if (points.length < 2) return null;
+        const origin = points[0].date.getTime();
+        const slopes = [];
+        for (let left = 0; left < points.length - 1; left += 1) {
+          for (let right = left + 1; right < points.length; right += 1) {
+            const days = (points[right].date.getTime() - points[left].date.getTime()) / 86400000;
+            if (days >= 1) slopes.push((points[right].value - points[left].value) / days);
+          }
+        }
+        const slope = median(slopes);
+        if (!Number.isFinite(slope)) return null;
+        const intercept = median(points.map((point) => point.value - slope * ((point.date.getTime() - origin) / 86400000)));
+        const lastX = (lastPoint.date.getTime() - origin) / 86400000;
+        return { slope, current: intercept + slope * lastX };
+      };
+
+      const currentWindowPoints = windowPoints(56);
+      // Die Stufe bewertet die gesamte Datenbasis; nur die Trendberechnung bleibt auf 56 Tage begrenzt.
+      const evidenceCount = daily.length;
+      if (evidenceCount < 7) {
+        return { text: `Noch nicht genügend Daten (${evidenceCount}/7 Messtage)`, weeklyLoss: null, sampleCount: evidenceCount, confidence: 'Noch nicht belastbar' };
+      }
+      const confidence = evidenceCount < 14
+        ? 'Sehr frühe Schätzung'
+        : evidenceCount < 28
+          ? 'Vorläufige Schätzung'
+          : evidenceCount < 56
+            ? 'Zunehmend stabil'
+            : 'Stabiler Langzeittrend';
+
+      let stablePoints = currentWindowPoints;
+      if (stablePoints.length < 10) stablePoints = daily;
+      const stableFit = robustFit(stablePoints);
+      const recentPoints = windowPoints(28);
+      const recentSpan = recentPoints.length >= 2 ? (recentPoints[recentPoints.length - 1].date - recentPoints[0].date) / 86400000 : 0;
+      const recentFit = recentPoints.length >= 10 && recentSpan >= 14 ? robustFit(recentPoints) : null;
+      if (!stableFit) return { text: 'Nicht genug Daten für Prognose', confidence };
+
+      // Der längere Trend dominiert. Der jüngere Verlauf kann Änderungen aufnehmen, ohne den Termin täglich springen zu lassen.
+      const slope = recentFit ? stableFit.slope * 0.7 + recentFit.slope * 0.3 : stableFit.slope;
+      const smoothedCurrent = recentFit ? stableFit.current * 0.7 + recentFit.current * 0.3 : stableFit.current;
+      const dailyLoss = -slope;
+      if (!(dailyLoss > 0.001)) return { text: `${confidence}: aktuell keine stabile Abnahme erkennbar`, weeklyLoss: 0, sampleCount: evidenceCount, confidence };
+
+      const remainingDays = Math.ceil(Math.max(0, smoothedCurrent - targetValue) / dailyLoss);
+      if (remainingDays > 1825) return { text: `${confidence}: langfristiger Zieltermin noch nicht belastbar`, weeklyLoss: dailyLoss * 7, sampleCount: evidenceCount, confidence };
+      const etaDate = new Date(lastPoint.date.getTime() + remainingDays * 86400000);
+      return {
+        text: `${confidence}: ca. ${formatGermanDate(etaDate)} [${remainingDays} ${remainingDays === 1 ? 'Tag' : 'Tage'}]`,
+        weeklyLoss: dailyLoss * 7,
+        sampleCount: evidenceCount,
+        confidence
+      };
+    }
+
     function getGoalEtaText(goal) {
       const targetValue = Number(goal?.targetValue);
       const typeId = Number(goal?.typeId);
@@ -964,35 +1253,7 @@
         return 'Nicht genug Daten für Prognose';
       }
 
-      const lastPoint = series[series.length - 1];
-      const remainingKg = lastPoint.value - targetValue;
-      if (remainingKg <= 0) {
-        return 'Ziel bereits erreicht';
-      }
-
-      const windowStart = new Date(lastPoint.date.getTime() - 21 * 86400000);
-      let last21 = series.filter((point) => point.date.getTime() >= windowStart.getTime());
-      if (last21.length < 2) {
-        last21 = series.slice(-Math.min(21, series.length));
-      }
-
-      if (last21.length < 2) {
-        return 'Nicht genug Daten für Prognose';
-      }
-
-      const first21 = last21[0];
-      const last21Point = last21[last21.length - 1];
-      const daysRaw = Math.round((last21Point.date.getTime() - first21.date.getTime()) / 86400000);
-      const days = Math.max(1, daysRaw);
-      const dailyLoss = (first21.value - last21Point.value) / days;
-
-      if (!(dailyLoss > 0)) {
-        return 'Aktuell keine Abnahme erkennbar';
-      }
-
-      const remainingDays = Math.ceil(remainingKg / dailyLoss);
-      const etaDate = new Date(last21Point.date.getTime() + remainingDays * 86400000);
-      return `${formatGermanDate(etaDate)} [${remainingDays} ${remainingDays === 1 ? 'Tag' : 'Tage'}]`;
+      return robustForecast(series, targetValue).text;
     }
 
     function getDefaultMeasurementEntries() {
@@ -1115,9 +1376,8 @@
       if (IS_READ_ONLY_VIEW) return;
 
       const entries = getTrainingPlanEntries();
-      const validFrom = entries.find((entry) => String(entry.validFrom || '').trim())?.validFrom || `${getTodayIsoDate()}T00:00`;
       state.trainingPlanForm = {
-        validFrom: String(validFrom).replace(' ', 'T').slice(0, 16),
+        validFrom: `${getTodayIsoDate()}T00:00`,
         entries: entries.map((entry, index) => ({
           uid: `${Date.now()}-plan-${index}`,
           id: Number(entry.id || 0),
@@ -1226,7 +1486,7 @@
       }
 
       const latestTs = points[points.length - 1].ts;
-      const minTs = latestTs - selectedDays * 86400000;
+      const minTs = inclusiveCalendarWindowStart(latestTs, selectedDays);
       const filtered = points.filter((point) => point.ts >= minTs);
 
       const safePoints = filtered.length > 0 ? filtered : [points[points.length - 1]];
@@ -1418,6 +1678,7 @@
         state.showProfileEditor = !state.showProfileEditor;
         renderAll();
       });
+
       const profileForm = block.querySelector('#profileForm');
       profileForm?.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -1483,7 +1744,12 @@
         overallDurationParts.push(`${overallRemainingDays} ${overallRemainingDays === 1 ? 'Tag' : 'Tage'}`);
       }
 
-      const overallDurationText = `${overallDurationParts.join(' ')} (${overallDays} Tage)`;
+      const overallMeasurementCount = allWeights.reduce((count, value, index) => {
+        const date = new Date(String(allDates[index] || ''));
+        return Number.isFinite(Number(value)) && Number.isFinite(date.getTime()) ? count + 1 : count;
+      }, 0);
+      const overallMeasurementLabel = overallMeasurementCount === 1 ? 'Messung' : 'Messungen';
+      const overallDurationText = `${overallDurationParts.join(' ')} (${overallDays} Tage mit ${overallMeasurementCount} ${overallMeasurementLabel})`;
 
       const rawHeight = Number(data.heightM ?? data.heightCm);
       const resolvedHeightM = Number.isFinite(rawHeight) && rawHeight > 0
@@ -1525,39 +1791,39 @@
         date: new Date(String(allDates[index] || ''))
       })).filter((item) => Number.isFinite(item.weight) && Number.isFinite(item.date.getTime()));
 
+      const weightTrend = linearTrend(series.map((item) => ({
+        value: item.weight,
+        ts: item.date.getTime()
+      })));
+      const currentEvaluation = evaluateCurrentWeight(series, weightTrend);
+      const latestMeasurementTs = series[series.length - 1]?.date.getTime();
+      const currentTrendWeight = weightTrend && Number.isFinite(latestMeasurementTs) ? weightTrend.valueAt(latestMeasurementTs) : currentWeight;
+      const currentTrendDelta = currentEvaluation?.delta ?? (currentWeight - currentTrendWeight);
+      const formattedCurrentTrendWeight = currentTrendWeight.toFixed(2).replace('.', ',');
+      const formattedCurrentTrendDelta = `${currentTrendDelta >= 0 ? '+' : '−'}${Math.abs(currentTrendDelta).toFixed(2).replace('.', ',')}`;
+      const cadenceDays = personalMeasurementCadence(series);
+      const measurementAgeDays = Number.isFinite(latestMeasurementTs) ? Math.max(0, (Date.now() - latestMeasurementTs) / 86400000) : 0;
+      const staleAfterDays = Number.isFinite(cadenceDays) ? cadenceDays * 1.5 : null;
+      const staleMeasurement = Number.isFinite(staleAfterDays) && measurementAgeDays > staleAfterDays;
+      const currentWeightValue = currentEvaluation
+        ? `${currentWeight.toFixed(1).replace('.', ',')}kg (Trend: ${formattedCurrentTrendWeight}kg · <span class="weight-delta weight-delta--${currentEvaluation.level}" title="Typische persönliche Messschwankung: ±${currentEvaluation.typicalFluctuation.toFixed(2).replace('.', ',')} kg">Δ ${formattedCurrentTrendDelta}kg · ${currentEvaluation.label}</span>)`
+        : `${currentWeight.toFixed(1).replace('.', ',')}kg (Trend: ${formattedCurrentTrendWeight}kg · Δ ${formattedCurrentTrendDelta}kg)`;
+      const staleMeasurementInfo = staleMeasurement
+        ? `<small class="measurement-stale-info">ⓘ Letzte Messung vor ${formatDurationDays(measurementAgeDays)} – dein üblicher Messtakt liegt bei etwa ${formatDurationDays(cadenceDays)}.</small>`
+        : '';
+
       let forecastText = 'Nicht berechenbar';
       if (Number.isFinite(goalWeight) && goalWeight > 0 && series.length >= 2 && Number.isFinite(currentWeight)) {
-        const lastPoint = series[series.length - 1];
-        const start21Date = new Date(lastPoint.date.getTime() - 21 * 86400000);
-        let last21 = series.filter((point) => point.date.getTime() >= start21Date.getTime());
-
-        if (last21.length < 2) {
-          last21 = series.slice(-Math.min(21, series.length));
-        }
-
-        if (last21.length >= 2) {
-          const first21 = last21[0];
-          const last21Point = last21[last21.length - 1];
-          const days21Raw = Math.round((last21Point.date.getTime() - first21.date.getTime()) / 86400000);
-          const days21 = Math.max(1, days21Raw);
-          const dailyLoss21 = (first21.weight - last21Point.weight) / days21;
-          const remainingKg = currentWeight - goalWeight;
-
-          if (remainingKg <= 0) {
-            forecastText = 'Ziel bereits erreicht';
-          } else if (dailyLoss21 > 0) {
-            const remainingDays = Math.ceil(remainingKg / dailyLoss21);
-            const etaDate = new Date(last21Point.date.getTime() + remainingDays * 86400000);
-            forecastText = `${formatGermanDate(etaDate)} [${remainingDays} ${remainingDays === 1 ? 'Tag' : 'Tage'}]`;
-          } else {
-            forecastText = 'Aktuell keine Abnahme erkennbar';
-          }
+        const forecast = robustForecast(series, goalWeight);
+        forecastText = forecast.text;
+        if (Number.isFinite(forecast.weeklyLoss) && forecast.weeklyLoss > 0) {
+          forecastText += ` · Trend ${forecast.weeklyLoss.toFixed(2).replace('.', ',')} kg/Woche`;
         }
       }
 
       const overviewItems = [
-        { label: 'Startgewicht', value: `${startWeight.toFixed(1)} kg` },
-        { label: 'Aktuelles Gewicht', value: `${currentWeight.toFixed(1)} kg` },
+        { label: 'Startgewicht', value: `${startWeight.toFixed(1).replace('.', ',')}kg am ${formatGermanDate(firstDateOverall)}` },
+        { label: 'Aktuelles Gewicht', value: `${currentWeightValue}${staleMeasurementInfo}`, valueClass: 'current-weight-line' },
         { label: 'Zielgewicht', value: goalWeightValue },
         { label: 'Gesamtdauer', value: overallDurationText },
         { label: 'Änderung im Zeitraum', value: `${deltaInWindow < 0 ? '-' : '+'}${Math.abs(deltaInWindow).toFixed(1)} kg` },
@@ -1576,7 +1842,7 @@
           ${overviewItems.map(item => `
             <div class="table-item">
               <span>${item.label}</span>
-              <strong>${item.value}</strong>
+              <strong${item.valueClass ? ` class="${item.valueClass}"` : ''}>${item.value}</strong>
             </div>
           `).join('')}
         </div>
@@ -1679,10 +1945,20 @@
       }
 
       const goals = Array.isArray(data.goals) ? data.goals : [];
+      const openRewardCount = goals.filter((goal) => (
+        !!goal?.achievedAt
+        && !goal?.rewardedAt
+        && String(goal?.rewardedWith || '').trim().length === 0
+      )).length;
+      const goalsHeading = `
+        <div class="block-heading-row">
+          <h2>Zwischenziele & Motivation</h2>
+          ${openRewardCount > 0 ? `<span class="open-rewards-badge" title="${openRewardCount} noch offene ${openRewardCount === 1 ? 'Belohnung' : 'Belohnungen'}">🎁 ${openRewardCount} offen</span>` : ''}
+        </div>`;
 
       if (goals.length === 0) {
         block.innerHTML = `
-          <h2>Zwischenziele & Motivation</h2>
+          ${goalsHeading}
           <div class="small">Noch keine Ziele vorhanden.</div>
           ${!IS_READ_ONLY_VIEW ? '<div style="margin-top:10px;"><button class="btn-primary" id="createGoalFromGoalsBlock" type="button">Neues Ziel erstellen</button></div>' : ''}
         `;
@@ -1760,14 +2036,14 @@
 
       if (cards.length === 0) {
         block.innerHTML = `
-          <h2>Zwischenziele & Motivation</h2>
+          ${goalsHeading}
           <div class="small">Keine passenden Messwerte fuer die vorhandenen Ziele gefunden.</div>
         `;
         return block;
       }
 
       block.innerHTML = `
-        <h2>Zwischenziele & Motivation</h2>
+        ${goalsHeading}
         ${state.goalCelebrationText ? `<div class="goal-achievement-banner">${state.goalCelebrationText}</div>` : ''}
         ${state.goalsNotice ? `<div class="small" style="margin-bottom:8px; color: var(--success); font-weight:700;">${state.goalsNotice}</div>` : ''}
         <div class="goals-grid">${cards.join('')}</div>
@@ -1805,6 +2081,16 @@
 
       const currentValueMaps = buildGoalCurrentValueMaps();
 
+      const goalStatusCounts = goals.reduce((counts, goal) => {
+        const status = getGoalHistoryStatus(goal);
+        counts[status] = (counts[status] || 0) + 1;
+        return counts;
+      }, {
+        'status-achieved-rewarded': 0,
+        'status-achieved-open': 0,
+        'status-pending': 0
+      });
+
       const sorted = [...goals].sort((a, b) => {
         const aIsAchieved = !!a.achievedAt;
         const bIsAchieved = !!b.achievedAt;
@@ -1833,18 +2119,38 @@
         return Number(a.id) - Number(b.id);
       });
 
+      const visibleGoals = state.goalHistoryFilter
+        ? sorted.filter((goal) => getGoalHistoryStatus(goal) === state.goalHistoryFilter)
+        : sorted;
+
+      const legendItems = [
+        { status: 'status-achieved-rewarded', label: 'Erreicht und belohnt' },
+        { status: 'status-achieved-open', label: 'Erreicht, noch nicht belohnt' },
+        { status: 'status-pending', label: 'Noch nicht erreicht' }
+      ];
+
       block.innerHTML = `
         <div class="goal-history-toolbar">
           <h2>Ziel-Historie</h2>
           ${IS_READ_ONLY_VIEW ? '' : '<button class="btn-primary" id="createGoalBtn" type="button">Neues Ziel</button>'}
         </div>
         <div class="goal-history-legend">
-          <div class="goal-history-legend-item"><span class="goal-status-dot status-achieved-rewarded"></span> Erreicht und belohnt</div>
-          <div class="goal-history-legend-item"><span class="goal-status-dot status-achieved-open"></span> Erreicht, noch nicht belohnt</div>
-          <div class="goal-history-legend-item"><span class="goal-status-dot status-pending"></span> Noch nicht erreicht</div>
+          ${legendItems.map((item) => `
+            <button
+              class="goal-history-legend-item ${state.goalHistoryFilter === item.status ? 'is-active' : ''}"
+              data-goal-history-filter="${item.status}"
+              type="button"
+              aria-pressed="${state.goalHistoryFilter === item.status ? 'true' : 'false'}"
+              title="${state.goalHistoryFilter === item.status ? 'Filter aufheben' : `Nur „${item.label}“ anzeigen`}"
+            >
+              <span class="goal-status-dot ${item.status}"></span>
+              <span>${item.label}</span>
+              <span class="goal-history-count">${goalStatusCounts[item.status]}</span>
+            </button>
+          `).join('')}
         </div>
         <div class="goals-history-list">
-          ${sorted.map((goal) => {
+          ${visibleGoals.map((goal) => {
             const achieved = !!goal.achievedAt;
             const hasReward = String(goal.rewardedWith || '').trim().length > 0;
             const unit = getGoalUnit(goal);
@@ -1876,12 +2182,20 @@
                 ` : ''}
               </div>
             `;
-          }).join('')}
+          }).join('') || '<div class="small goal-history-empty-filter">Für diesen Status sind keine Ziele vorhanden.</div>'}
         </div>
       `;
 
       const createGoalBtn = block.querySelector('#createGoalBtn');
       createGoalBtn?.addEventListener('click', () => openGoalEditor());
+
+      block.querySelectorAll('[data-goal-history-filter]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const selectedFilter = String(button.getAttribute('data-goal-history-filter') || '');
+          state.goalHistoryFilter = state.goalHistoryFilter === selectedFilter ? '' : selectedFilter;
+          renderAll();
+        });
+      });
 
       block.querySelectorAll('[data-reward-goal-id]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -2464,7 +2778,7 @@
 
       const latestKnownTs = knownTimestamps.length > 0 ? Math.max(...knownTimestamps) : NaN;
       const hasWindowRange = Number.isFinite(selectedDays) && selectedDays !== null && Number.isFinite(latestKnownTs);
-      const windowStartTs = hasWindowRange ? latestKnownTs - (selectedDays * 86400000) : NaN;
+      const windowStartTs = hasWindowRange ? inclusiveCalendarWindowStart(latestKnownTs, selectedDays) : NaN;
       const windowEndTs = hasWindowRange ? latestKnownTs : NaN;
 
       const historyByTitle = new Map();
@@ -2641,6 +2955,7 @@
       const weekdayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
       const todayName = weekdayNames[new Date().getDay()];
       const tomorrowName = weekdayNames[(new Date().getDay() + 1) % 7];
+      const todayProgress = getTodayTrainingProgress(allPlanItems);
 
       const groupedPlanItems = weekdayOrder
         .map((day) => ({
@@ -2673,10 +2988,13 @@
               </div>
               <div class="plan-entry-list">
                 ${group.entries.map((entry) => `
-                  <div class="plan-entry-item">
-                    <div class="meta">${escapeHtml(entry.focus)} • ${escapeHtml(entry.duration)}</div>
-                    <div class="small">${escapeHtml(entry.note).replace(/\n/g, '<br />')}</div>
-                    ${!IS_READ_ONLY_VIEW && group.day === todayName ? `<button class="mini-btn" data-apply-training-entry="${entry.id}" type="button">Training übernehmen</button>` : ''}
+                  <div class="plan-entry-item ${group.day === todayName ? (todayProgress.isCompleted(entry) ? 'is-completed' : 'is-open') : ''}">
+                    <div class="plan-entry-heading">
+                      <div class="meta">${escapeHtml(entry.focus)} • ${escapeHtml(entry.duration)}</div>
+                      ${group.day === todayName ? `<span class="plan-status-pill ${todayProgress.isCompleted(entry) ? 'completed' : 'open'}">${todayProgress.isCompleted(entry) ? 'Erledigt' : 'Noch offen'}</span>` : ''}
+                    </div>
+                    <div class="small training-markdown">${renderTrainingMarkdown(entry.note)}</div>
+                    ${!IS_READ_ONLY_VIEW && group.day === todayName ? `<button class="mini-btn" data-apply-training-entry="${entry.id}" type="button">${todayProgress.isCompleted(entry) ? 'Erneut eintragen' : 'Training übernehmen'}</button>` : ''}
                   </div>
                 `).join('')}
               </div>
@@ -2770,7 +3088,7 @@
                     <div class="goal-line">Gültig ab: <strong>${escapeHtml(formatDateTimeText(entry.planValidFrom))}</strong></div>
                     ${String(entry.planFocus || '').trim() ? `<div class="goal-line">Fokus: <strong>${escapeHtml(String(entry.planFocus || ''))}</strong></div>` : ''}
                     ${String(entry.planDuration || '').trim() ? `<div class="goal-line">Dauer: <strong>${escapeHtml(String(entry.planDuration || ''))}</strong></div>` : ''}
-                    ${String(entry.planNote || '').trim() ? `<div class="training-history-text">${escapeHtml(String(entry.planNote || '')).replace(/\n/g, '<br />')}</div>` : ''}
+                    ${String(entry.planNote || '').trim() ? `<div class="training-history-text training-markdown">${renderTrainingMarkdown(entry.planNote)}</div>` : ''}
                   </details>
                 ` : ''}
                 <div class="training-meta-pills">
@@ -2887,7 +3205,7 @@
           state.trainingNotice = 'Training wurde übernommen und gespeichert.';
           state.showTrainingForm = false;
           state.trainingForm = null;
-          renderAll();
+          await loadDashboardData();
         } catch (error) {
           window.alert(`Speichern fehlgeschlagen: ${error.message}`);
         }
@@ -2912,7 +3230,7 @@
           <form id="trainingPlanForm" class="form-grid">
             <div class="field">
               <label for="trainingPlanValidFrom">Gültig ab</label>
-              <input id="trainingPlanValidFrom" name="validFrom" type="datetime-local" value="${escapeHtml(state.trainingPlanForm.validFrom || `${getTodayIsoDate()}T00:00`)}" required />
+              <input id="trainingPlanValidFrom" name="validFrom" type="datetime-local" value="${escapeHtml(state.trainingPlanForm.validFrom || `${getTodayIsoDate()}T00:00`)}" readonly required />
             </div>
             <div class="training-plan-editor-list">
               ${entryRows.map((entry, index) => `
@@ -2940,6 +3258,7 @@
                   <div class="field">
                     <label for="plan-note-${index}">Beschreibung</label>
                     <textarea id="plan-note-${index}" name="plan-note-${index}" required>${escapeHtml(entry.note || '')}</textarea>
+                    <div class="small">Markdown möglich: <strong>**fett**</strong>, <em>*kursiv*</em>, Überschriften mit # und Listen mit - oder 1.</div>
                   </div>
                 </div>
               `).join('')}
@@ -3010,6 +3329,7 @@
 
         const formData = new FormData(event.currentTarget);
         const entries = (state.trainingPlanForm.entries || []).map((entry, index) => ({
+          id: Number(entry.id || 0),
           day: String(formData.get(`plan-day-${index}`) || entry.day || ''),
           duration: String(formData.get(`plan-duration-${index}`) || entry.duration || '').trim(),
           focus: String(formData.get(`plan-focus-${index}`) || entry.focus || '').trim(),
@@ -3032,7 +3352,9 @@
             throw new Error(result.error || `HTTP ${response.status}`);
           }
 
-          state.trainingPlanNotice = 'Trainingsplan wurde versioniert gespeichert.';
+          state.trainingPlanNotice = Number(result.changedEntries || 0) > 0
+            ? 'Trainingsplan wurde versioniert gespeichert.'
+            : 'Es wurden keine Änderungen am Trainingsplan erkannt.';
           state.showTrainingPlanEditor = false;
           state.trainingPlanForm = null;
           await loadDashboardData();
@@ -3234,7 +3556,6 @@
           state.showMeasurementForm = false;
           state.measurementForm = null;
           await loadDashboardData();
-          renderAll();
         } catch (error) {
           window.alert(`Speichern fehlgeschlagen: ${error.message}`);
         }
@@ -3413,7 +3734,12 @@
 
     async function loadDashboardData() {
       try {
-        const response = await fetch(buildDataApiUrl(), { cache: 'no-store' });
+        const requestUrl = new URL(buildDataApiUrl(), window.location.href);
+        requestUrl.searchParams.set('_refresh', String(Date.now()));
+        const response = await fetch(requestUrl.toString(), {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache' }
+        });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -3460,10 +3786,7 @@
     function getAnalysisCutoff() {
       if (state.analysisPeriod === 'all') return null;
       const days = Number(state.analysisPeriod || 30);
-      const cutoff = new Date();
-      cutoff.setHours(0, 0, 0, 0);
-      cutoff.setDate(cutoff.getDate() - Math.max(1, days) + 1);
-      return cutoff;
+      return new Date(inclusiveCalendarWindowStart(Date.now(), days));
     }
 
     function dateToIsoLocal(date) {
@@ -3493,40 +3816,75 @@
       let missed = 0;
       const consumedTrainingIds = new Set();
       const calendarDays = {};
-      const excused = { illness: 0, pain_pause: 0, vacation: 0, other: 0 };
+      const exceptionReasons = ['illness', 'pain_pause', 'vacation', 'other'];
+      const excusedUnits = Object.fromEntries(exceptionReasons.map((reason) => [reason, 0]));
+      const excusedDaySets = Object.fromEntries(exceptionReasons.map((reason) => [reason, new Set()]));
       const firstPlanTs = plans.reduce((min, plan) => Math.min(min, parseChartDateToTimestamp(plan.validFrom)), Infinity);
       const loopStart = new Date(Math.max(cutoffTs, Number.isFinite(firstPlanTs) ? firstPlanTs : today.getTime()));
       loopStart.setHours(0, 0, 0, 0);
 
-      for (let day = new Date(loopStart); day <= yesterday; day.setDate(day.getDate() + 1)) {
+      for (let day = new Date(loopStart); day <= today; day.setDate(day.getDate() + 1)) {
         const iso = dateToIsoLocal(day);
         const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
         const scheduled = plans.filter((plan) => {
           const validFrom = parseChartDateToTimestamp(plan.validFrom);
           const deactivated = plan.deactivatedAt ? parseChartDateToTimestamp(plan.deactivatedAt) : Infinity;
-          return plan.day === weekdayNames[day.getDay()] && validFrom <= dayEnd.getTime() && deactivated > day.getTime();
+          return plan.day === weekdayNames[day.getDay()] && validFrom <= dayEnd.getTime() && deactivated > dayEnd.getTime();
         });
-        calendarDays[iso] = calendarDays[iso] || { planned: 0, completed: 0, missed: 0, excused: 0, additional: 0 };
+        calendarDays[iso] = calendarDays[iso] || { planned: 0, completed: 0, missed: 0, excused: 0, additional: 0, items: [] };
         calendarDays[iso].planned += scheduled.length;
         scheduled.forEach((plan) => {
           const performed = trainings.find((entry) => {
             if (consumedTrainingIds.has(Number(entry.id)) || String(entry.date) !== iso) return false;
             const linked = Number(entry.sourcePlanEntryId || 0) > 0;
-            return Number(entry.sourcePlanEntryId) === Number(plan.id)
-              || (linked && String(entry.sourceDay || entry.planDay || '') === String(plan.day));
+            if (Number(entry.sourcePlanEntryId) === Number(plan.id)) return true;
+            const linkedPlan = linked
+              ? plans.find((candidate) => Number(candidate.id) === Number(entry.sourcePlanEntryId))
+              : null;
+            if (linkedPlan && String(linkedPlan.focus || '') === String(plan.focus || '')) return true;
+            return linked && scheduled.length === 1
+              && String(entry.sourceDay || entry.planDay || '') === String(plan.day);
           });
           if (performed) {
             consumedTrainingIds.add(Number(performed.id));
             calendarDays[iso].completed += 1;
+            calendarDays[iso].items.push({
+              status: 'done',
+              training: String(performed.trainingText || plan.focus || 'Geplantes Training'),
+              duration: String(performed.duration || plan.duration || ''),
+              detail: String(performed.limitation || ''),
+              plannedTraining: String(plan.focus || '')
+            });
             completed += 1;
             return;
           }
           const exception = exceptions.find((item) => String(item.dateFrom) <= iso && String(item.dateTo) >= iso);
           if (exception) {
             calendarDays[iso].excused += 1;
-            excused[exception.reason] = (excused[exception.reason] || 0) + 1;
+            calendarDays[iso].items.push({
+              status: 'excused',
+              training: String(plan.focus || 'Geplantes Training'),
+              duration: String(plan.duration || ''),
+              reason: exceptionReasonLabel(exception.reason),
+              detail: String(exception.note || '')
+            });
+            excusedUnits[exception.reason] = (excusedUnits[exception.reason] || 0) + 1;
+          } else if (iso === dateToIsoLocal(today)) {
+            calendarDays[iso].open = (calendarDays[iso].open || 0) + 1;
+            calendarDays[iso].items.push({
+              status: 'open',
+              training: String(plan.focus || 'Geplantes Training'),
+              duration: String(plan.duration || ''),
+              detail: String(plan.note || '')
+            });
           } else {
             calendarDays[iso].missed += 1;
+            calendarDays[iso].items.push({
+              status: 'missed',
+              training: String(plan.focus || 'Geplantes Training'),
+              duration: String(plan.duration || ''),
+              detail: String(plan.note || '')
+            });
             missed += 1;
           }
         });
@@ -3534,16 +3892,48 @@
 
       trainings.forEach((entry) => {
         const iso = String(entry.date || '');
-        calendarDays[iso] = calendarDays[iso] || { planned: 0, completed: 0, missed: 0, excused: 0, additional: 0 };
+        calendarDays[iso] = calendarDays[iso] || { planned: 0, completed: 0, missed: 0, excused: 0, additional: 0, items: [] };
         if (Number(entry.sourcePlanEntryId || 0) > 0 && !consumedTrainingIds.has(Number(entry.id))) {
           consumedTrainingIds.add(Number(entry.id));
           calendarDays[iso].planned += 1;
           calendarDays[iso].completed += 1;
+          const sourcePlan = plans.find((plan) => Number(plan.id) === Number(entry.sourcePlanEntryId));
+          calendarDays[iso].items.push({
+            status: 'done',
+            training: String(entry.trainingText || sourcePlan?.focus || 'Geplantes Training'),
+            duration: String(entry.duration || sourcePlan?.duration || ''),
+            detail: String(entry.limitation || ''),
+            plannedTraining: String(sourcePlan?.focus || entry.planFocus || '')
+          });
           completed += 1;
         } else if (Number(entry.sourcePlanEntryId || 0) <= 0) {
           calendarDays[iso].additional += 1;
+          calendarDays[iso].items.push({
+            status: 'extra',
+            training: String(entry.trainingText || 'Zusatztraining'),
+            duration: String(entry.duration || ''),
+            detail: String(entry.limitation || '')
+          });
         }
       });
+
+      const yesterdayIso = dateToIsoLocal(yesterday);
+      const cutoffIso = cutoff ? dateToIsoLocal(cutoff) : '';
+      exceptions.forEach((exception) => {
+        const reason = exceptionReasons.includes(exception.reason) ? exception.reason : 'other';
+        const firstIso = cutoffIso && String(exception.dateFrom) < cutoffIso ? cutoffIso : String(exception.dateFrom || '');
+        const lastIso = String(exception.dateTo || '') > yesterdayIso ? yesterdayIso : String(exception.dateTo || '');
+        const firstDay = new Date(`${firstIso}T00:00:00`);
+        const lastDay = new Date(`${lastIso}T00:00:00`);
+        if (!Number.isFinite(firstDay.getTime()) || !Number.isFinite(lastDay.getTime()) || firstDay > lastDay) return;
+        for (let day = new Date(firstDay); day <= lastDay; day.setDate(day.getDate() + 1)) {
+          excusedDaySets[reason].add(dateToIsoLocal(day));
+        }
+      });
+      const excused = Object.fromEntries(exceptionReasons.map((reason) => [reason, {
+        days: excusedDaySets[reason].size,
+        units: excusedUnits[reason] || 0
+      }]));
 
       const additional = trainings.filter((entry) => Number(entry.sourcePlanEntryId || 0) <= 0).length;
       const denominator = completed + missed;
@@ -3662,8 +4052,10 @@
       const missed = Number(day.missed || 0);
       const extra = Number(day.additional || 0);
       const excused = Number(day.excused || 0);
+      const open = Number(day.open || 0);
       return [
         { count: done, type: 'done', color: '#14532d' },
+        { count: open, type: 'open', color: '#f59e0b' },
         { count: missed, type: 'missed', color: '#ef4444' },
         { count: extra, type: 'extra', color: '#60a5fa' },
         { count: excused, type: 'excused', color: '#d1d5db' }
@@ -3702,6 +4094,7 @@
     function calendarLegendMarker(type) {
       return calendarMarkerMarkup({
         completed: type === 'done' ? 1 : 0,
+        open: type === 'open' ? 1 : 0,
         missed: type === 'missed' ? 1 : 0,
         additional: type === 'extra' ? 1 : 0,
         excused: type === 'excused' ? 1 : 0
@@ -3733,12 +4126,57 @@
             continue;
           }
           const stats = calendarDays[iso];
-          const label = stats ? `${stats.completed || 0} absolviert, ${stats.missed || 0} ausgelassen, ${stats.additional || 0} zusätzlich, ${stats.excused || 0} Ausnahme` : 'Kein Training';
-          cells.push(`<div class="calendar-day" title="${escapeHtml(label)}">${calendarMarkerMarkup(stats, day)}</div>`);
+          const label = stats ? `${stats.completed || 0} absolviert, ${stats.open || 0} offen, ${stats.missed || 0} ausgelassen, ${stats.additional || 0} zusätzlich, ${stats.excused || 0} Ausnahme` : 'Kein Training';
+          const isToday = iso === getTodayIsoDate();
+          cells.push(`<button class="calendar-day calendar-day-button ${isToday ? 'is-today' : ''}" type="button" data-training-calendar-date="${iso}" title="${escapeHtml(label)}" aria-label="${day}. ${new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(first)}: ${escapeHtml(label)}">${calendarMarkerMarkup(stats, day)}</button>`);
         }
         months.push(`<div class="training-calendar"><div class="calendar-title">${new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(first)}</div><div class="calendar-weekdays">${['Mo','Di','Mi','Do','Fr','Sa','So'].map((day) => `<span>${day}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div></div>`);
       }
-      return `<div class="training-calendars">${months.join('')}</div><div class="calendar-legend"><span>${calendarLegendMarker('done')}Absolviert</span><span>${calendarLegendMarker('missed')}Ausgelassen</span><span>${calendarLegendMarker('extra')}Zusatztraining</span><span>${calendarLegendMarker('excused')}Ausnahme</span></div>`;
+      return `<div class="training-calendars">${months.join('')}</div><div class="calendar-legend"><span>${calendarLegendMarker('done')}Absolviert</span><span>${calendarLegendMarker('open')}Offen</span><span>${calendarLegendMarker('missed')}Ausgelassen</span><span>${calendarLegendMarker('extra')}Zusatztraining</span><span>${calendarLegendMarker('excused')}Ausnahme</span></div>`;
+    }
+
+    function showTrainingDayDetails(iso, day) {
+      const items = Array.isArray(day?.items) ? day.items : [];
+      const date = new Date(`${iso}T00:00:00`);
+      const dateLabel = Number.isFinite(date.getTime())
+        ? new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }).format(date)
+        : iso;
+      const statusLabels = { done: 'Absolviert', open: 'Offen', missed: 'Ausgelassen', extra: 'Zusatztraining', excused: 'Ausnahme' };
+      const rows = items.map((item) => {
+        const details = [];
+        if (item.status === 'excused' && item.reason) details.push(`<strong>Grund:</strong> ${escapeHtml(item.reason)}`);
+        if (item.plannedTraining && item.plannedTraining !== item.training) details.push(`<strong>Geplant:</strong> ${escapeHtml(item.plannedTraining)}`);
+        if (item.detail) details.push(escapeHtml(item.detail));
+        return `<tr>
+          <td><span class="training-status training-status-${item.status}">${escapeHtml(statusLabels[item.status] || 'Unbekannt')}</span></td>
+          <td>${escapeHtml(item.training || 'Training')}</td>
+          <td>${escapeHtml(item.duration || '---')}</td>
+          <td>${details.join('<br>') || '---'}</td>
+        </tr>`;
+      }).join('');
+      const overlay = document.createElement('section');
+      overlay.className = 'modal-backdrop training-day-modal';
+      overlay.innerHTML = `
+        <div class="modal-card modal-card-wide" role="dialog" aria-modal="true" aria-labelledby="trainingDayModalTitle">
+          <div class="training-day-modal-head">
+            <div><h3 id="trainingDayModalTitle">Training am ${escapeHtml(dateLabel)}</h3><div class="small">Geplante und eingetragene Einheiten dieses Tages</div></div>
+            <button class="btn-toggle" type="button" data-close-training-day>Schließen</button>
+          </div>
+          ${rows ? `<div class="training-day-table-wrap"><table class="training-day-table"><thead><tr><th>Status</th><th>Training</th><th>Dauer</th><th>Details</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="training-day-empty">An diesem Tag waren keine Trainings geplant oder eingetragen.</div>'}
+        </div>`;
+      const close = () => {
+        document.removeEventListener('keydown', onKeyDown);
+        overlay.remove();
+      };
+      overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+      overlay.querySelector('[data-close-training-day]')?.addEventListener('click', close);
+      const onKeyDown = (event) => {
+        if (event.key !== 'Escape') return;
+        close();
+      };
+      document.addEventListener('keydown', onKeyDown);
+      document.body.appendChild(overlay);
+      overlay.querySelector('[data-close-training-day]')?.focus();
     }
 
     function analysisNumber(value, digits = 2, signed = false) {
@@ -3933,7 +4371,7 @@
     }
 
     function buildPlateauWindow(days) {
-      const cutoff = Date.now() - days * 86400000;
+      const cutoff = inclusiveCalendarWindowStart(Date.now(), days);
       const weights = allWeightPoints().filter((point) => point.ts >= cutoff);
       const belly = measurementSeriesMatching(/bauch|waist/); const bellyPoints = belly ? belly.points.filter((point) => point.ts >= cutoff) : [];
       if (weights.length < 3 || bellyPoints.length < 2) return { days, state: 'Noch nicht bewertbar', text: `Mindestens drei Gewichte und zwei Bauchmessungen in ${days} Tagen nötig.` };
@@ -3945,8 +4383,83 @@
       return { days, state: 'Kein Plateau erkennbar', text: `Gewicht ${analysisNumber(weightChange, 1, true)} kg, Bauch ${analysisNumber(bellyChange, 1, true)} cm.` };
     }
 
+    function buildBodySilhouette(body) {
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const metric = (pattern, fallback, excludePattern = null) => {
+        const history = (Array.isArray(data.measurementHistory) ? data.measurementHistory : []).find((entry) => {
+          const name = normalizeTypeName(entry.typeName);
+          return pattern.test(name) && !(excludePattern && excludePattern.test(name));
+        });
+        const points = (history?.values || []).map((value, index) => ({
+          value: Number(value),
+          ts: parseChartDateToTimestamp((history?.dates || [])[index])
+        })).filter((point) => Number.isFinite(point.value) && Number.isFinite(point.ts)).sort((a, b) => a.ts - b.ts);
+        const cutoff = getAnalysisCutoff();
+        const cutoffTs = cutoff ? cutoff.getTime() : -Infinity;
+        const beforeOrAtCutoff = points.filter((point) => point.ts <= cutoffTs);
+        const startPoint = cutoff
+          ? (beforeOrAtCutoff[beforeOrAtCutoff.length - 1] || points.find((point) => point.ts >= cutoffTs))
+          : points[0];
+        const currentPoint = points[points.length - 1];
+        return {
+          start: Number(startPoint?.value) || fallback,
+          current: Number(currentPoint?.value) || Number(startPoint?.value) || fallback
+        };
+      };
+      const chest = metric(/brust|chest/, 100, /unterbrust|underbust/);
+      const belly = metric(/bauch|waist/, 95);
+      const waist = metric(/bund/, belly.start);
+      const hip = metric(/po|hip/, 100);
+      const startAverage = (chest.start + belly.start + waist.start + hip.start) / 4;
+      const currentAverage = (chest.current + belly.current + waist.current + hip.current) / 4;
+
+      const dimensions = (phase) => {
+        const average = phase === 'start' ? startAverage : currentAverage;
+        return {
+          chest: clamp((phase === 'start' ? chest.start : chest.current) / 3, 26, 48),
+          belly: clamp((phase === 'start' ? belly.start : belly.current) / 3, 24, 50),
+          waist: clamp((phase === 'start' ? waist.start : waist.current) / 3, 23, 47),
+          hip: clamp((phase === 'start' ? hip.start : hip.current) / 3, 27, 50),
+          depthChest: clamp((phase === 'start' ? chest.start : chest.current) / 4.5, 19, 31),
+          depthBelly: clamp((phase === 'start' ? belly.start : belly.current) / 4.1, 19, 34),
+          depthHip: clamp((phase === 'start' ? hip.start : hip.current) / 4.3, 20, 33),
+          limb: clamp(average / 105, .82, 1.18)
+        };
+      };
+
+      const front = (phase) => {
+        const d = dimensions(phase); const c = 110; const arm = 8 * d.limb; const leg = 13 * d.limb;
+        return `<g class="body-silhouette-layer ${phase}">
+          <circle cx="${c}" cy="29" r="18"/>
+          <path d="M100 48 L100 58 C${c-d.chest} 63 ${c-d.chest} 83 ${c-d.belly} 122 C${c-d.waist} 148 ${c-d.hip} 171 ${c-d.hip} 192 L${c-12} 203 L120 203 L${c+d.hip} 192 C${c+d.hip} 171 ${c+d.waist} 148 ${c+d.belly} 122 C${c+d.chest} 83 ${c+d.chest} 63 120 58 L120 48 Z"/>
+          <path d="M${c-d.chest+3} 67 C${c-d.chest-12} 88 ${c-d.chest-14} 126 ${c-d.chest-18} 174 Q${c-d.chest-15} 185 ${c-d.chest-8} 176 L${c-d.chest+arm} 91 Z"/>
+          <path d="M${c+d.chest-3} 67 C${c+d.chest+12} 88 ${c+d.chest+14} 126 ${c+d.chest+18} 174 Q${c+d.chest+15} 185 ${c+d.chest+8} 176 L${c+d.chest-arm} 91 Z"/>
+          <path d="M${c-d.hip+5} 187 C${c-d.hip+2} 226 ${c-leg-7} 270 ${c-leg-9} 329 Q${c-leg} 338 ${c-2} 329 L${c-1} 202 Z"/>
+          <path d="M${c+d.hip-5} 187 C${c+d.hip-2} 226 ${c+leg+7} 270 ${c+leg+9} 329 Q${c+leg} 338 ${c+2} 329 L${c+1} 202 Z"/>
+        </g>`;
+      };
+      const side = (phase) => {
+        const d = dimensions(phase); const c = 110; const limb = d.limb;
+        return `<g class="body-silhouette-layer ${phase}">
+          <circle cx="${c+4}" cy="29" r="18"/>
+          <path d="M103 47 L102 61 C${c-d.depthChest*.45} 78 ${c-d.depthChest*.48} 111 ${c-d.depthBelly*.42} 142 C${c-d.depthHip*.45} 169 ${c-d.depthHip*.48} 189 102 202 L119 203 C${c+d.depthHip*.62} 188 ${c+d.depthBelly*.7} 154 ${c+d.depthBelly*.72} 130 C${c+d.depthChest*.72} 102 ${c+d.depthChest*.7} 73 119 58 L119 47 Z"/>
+          <path d="M118 69 C${132+8*limb} 100 ${129+8*limb} 139 ${128+9*limb} 178 Q${124+8*limb} 188 ${120+6*limb} 177 L116 87 Z"/>
+          <path d="M103 190 C99 228 98 274 96 329 Q104 338 112 329 L116 202 Z"/>
+          <path d="M116 193 C${121+5*limb} 232 ${120+5*limb} 277 ${119+5*limb} 329 Q${127+5*limb} 337 ${134+5*limb} 327 L127 201 Z"/>
+        </g>`;
+      };
+
+      return `<div class="body-silhouette-wrap">
+        <div class="body-silhouette-legend"><span class="start">Start am Zeitraumrand</span><span class="current">Aktuell</span></div>
+        <div class="body-silhouette-views">
+          <figure><svg viewBox="0 0 220 350" role="img" aria-label="Schematische Körperform von vorne">${front('start')}${front('current')}</svg><figcaption>Frontal</figcaption></figure>
+          <figure><svg viewBox="0 0 220 350" role="img" aria-label="Schematische Körperform von der Seite">${side('start')}${side('current')}</svg><figcaption>Seite</figcaption></figure>
+        </div>
+      </div>`;
+    }
+
     function analysisControlMarkup() {
-      const labels = { '7': '7 Tage', '30': '30 Tage', '90': '90 Tage', '180': '6 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
+      const labels = { '7': '7 Tage', '14': '14 Tage', '30': '30 Tage', '60': '60 Tage', '90': '90 Tage', '120': '4 Monate', '150': '5 Monate', '180': '6 Monate', '270': '9 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
       return `<div class="analysis-controls no-print"><select id="analysisPeriod">${Object.entries(labels).map(([value, label]) => `<option value="${value}" ${state.analysisPeriod === value ? 'selected' : ''}>${label}</option>`).join('')}</select>${IS_READ_ONLY_VIEW ? '' : '<button class="btn-secondary" id="printAnalysisBtn" type="button">Als PDF exportieren</button>'}</div>`;
     }
 
@@ -3957,7 +4470,7 @@
 
     function analysisNavigation() {
       const nav = document.createElement('nav'); nav.className = 'analysis-page-nav no-print'; nav.setAttribute('aria-label', 'Analyseseiten');
-      const pages = { overview: 'Übersicht', rhythm: 'Rhythmus', training: 'Training', body: 'Körper & Messqualität' };
+      const pages = { overview: 'Übersicht', rhythm: 'Rhythmus', training: 'Training', body: 'Körper & Messqualität', silhouette: 'Körpersilhouette' };
       nav.innerHTML = Object.entries(pages).map(([key, label]) => `<button type="button" class="${state.analysisView === key ? 'active' : ''}" data-analysis-view="${key}">${label}</button>`).join('');
       nav.querySelectorAll('[data-analysis-view]').forEach((button) => button.addEventListener('click', () => { state.analysisView = button.dataset.analysisView; renderAll(); }));
       return nav;
@@ -3968,7 +4481,13 @@
 
     function renderAnalysisInsights(view) {
       const block = document.createElement('section'); block.className = 'block analysis-insights';
-      if (view === 'rhythm') {
+      if (view === 'silhouette') {
+        const body = buildBodyInsights();
+        block.classList.add('analysis-silhouette');
+        block.innerHTML = `<div class="analysis-head"><div><h2>Körpersilhouette</h2><div class="small">Start und aktueller Stand im gewählten Zeitraum</div></div>${analysisControlMarkup()}</div><div class="insight-grid">
+          ${insightCard('Proportionsvergleich', buildBodySilhouette(body), 'Schematische Darstellung: Brust, Bauch, Bund und Po basieren auf Messwerten. Arme und Beine werden mangels eigener Umfangsmessungen aus der mittleren Formveränderung abgeleitet.')}
+        </div>`;
+      } else if (view === 'rhythm') {
         const fingerprint = buildWeekFingerprint(); const plateaus = [buildPlateauWindow(7), buildPlateauWindow(21)]; const usable = fingerprint.filter((day) => day.count >= 3 && day.average !== null);
         const strongest = [...usable].sort((a,b) => a.average - b.average).slice(0, 3).map((day) => day.name).join(', ');
         block.innerHTML = `<div class="analysis-head"><div><h2>Dein Wochenrhythmus</h2><div class="small">Persönliche Muster relativ zu deinem Gewichtstrend</div></div>${analysisControlMarkup()}</div><div class="insight-grid">
@@ -4012,7 +4531,19 @@
       const block = document.createElement('section');
       block.className = 'block analysis-report';
       block.id = 'analysisReport';
-      const periodLabels = { '7': '7 Tage', '30': '30 Tage', '90': '90 Tage', '180': '6 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
+      const periodLabels = { '7': '7 Tage', '14': '14 Tage', '30': '30 Tage', '60': '60 Tage', '90': '90 Tage', '120': '4 Monate', '150': '5 Monate', '180': '6 Monate', '270': '9 Monate', '365': '12 Monate', all: 'Gesamter Verlauf' };
+      const exceptionCountText = (label, value) => {
+        const days = Number(value?.days || 0);
+        const units = Number(value?.units || 0);
+        if (days === 0 && units === 0) return '';
+        return `${label} ${days} ${days === 1 ? 'Tag' : 'Tage'} (${units} ${units === 1 ? 'Trainingseinheit' : 'Trainingseinheiten'})`;
+      };
+      const exceptionSummary = [
+        exceptionCountText('Krank', analysis.excused.illness),
+        exceptionCountText('Beschwerden', analysis.excused.pain_pause),
+        exceptionCountText('Urlaub', analysis.excused.vacation),
+        exceptionCountText('Sonstige', analysis.excused.other)
+      ].filter(Boolean).join(' · ') || 'Keine';
       const chartPoints = analysis.points;
       const analysisTimeDomain = getAnalysisTimeDomain(chartPoints, analysis.trainings);
       let polyline = '';
@@ -4060,12 +4591,12 @@
               <div class="analysis-chart-card">
                 <h3>Gewichtsverlauf · ${periodLabels[state.analysisPeriod]}</h3>
                 ${polyline ? `<svg class="analysis-chart-svg" viewBox="0 0 600 150" role="img" aria-label="Gewichtsverlauf mit Kilogramm- und Datumsskala">${weightScale}<polyline points="${polyline}" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>` : '<div class="small">Nicht genügend Messwerte für ein Diagramm.</div>'}
-                <div class="analysis-substats">Ø Belastung: ${analysis.avgLoad === null ? '---' : analysis.avgLoad.toFixed(1).replace('.', ',')} · Ø Schmerz: ${analysis.avgPain === null ? '---' : analysis.avgPain.toFixed(1).replace('.', ',')}</div>
               </div>
               <div class="analysis-chart-card analysis-load-card">
                 <h3>Belastung und Schmerz</h3>
                 ${buildTrainingLoadChart(analysis.trainings, analysisTimeDomain)}
                 <div class="analysis-chart-legend"><span><i class="load"></i>Belastung</span><span><i class="pain"></i>Schmerz</span><span>Punktgröße = Anzahl gleicher Werte am Tag</span></div>
+                <div class="analysis-substats">Ø Belastung: ${analysis.avgLoad === null ? '---' : analysis.avgLoad.toFixed(1).replace('.', ',')} · Ø Schmerz: ${analysis.avgPain === null ? '---' : analysis.avgPain.toFixed(1).replace('.', ',')}</div>
               </div>
             </div>
             <div class="analysis-support-stack">
@@ -4073,7 +4604,7 @@
               <div class="analysis-calendar-card">${buildTrainingCalendar(analysis.calendarDays)}</div>
             </div>
           </div>
-          <div class="analysis-excused"><strong>Ausnahmen:</strong> Krank ${analysis.excused.illness || 0} · Beschwerden ${analysis.excused.pain_pause || 0} · Urlaub ${analysis.excused.vacation || 0} · Sonstige ${analysis.excused.other || 0}</div>
+          <div class="analysis-excused"><strong>Ausnahmen:</strong> ${exceptionSummary}</div>
           <div class="analysis-disclaimer">BMI-Werte und Trendanalysen sind Orientierungshilfen und keine medizinische Diagnose. Zeitliche Zusammenhänge beweisen keine Ursache.</div>
           <div class="analysis-generated">Generiert am ${generatedDate} um ${generatedTime} Uhr</div>
         </div>
@@ -4091,6 +4622,12 @@
           </details>`}
       `;
       bindAnalysisControls(block);
+      block.querySelectorAll('[data-training-calendar-date]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const iso = String(button.dataset.trainingCalendarDate || '');
+          showTrainingDayDetails(iso, analysis.calendarDays[iso]);
+        });
+      });
       block.querySelector('#exceptionForm')?.addEventListener('submit', async (event) => {
         event.preventDefault();
         const form = new FormData(event.currentTarget);
@@ -4123,6 +4660,19 @@
       setTimeout(() => { overlay.classList.remove('visible'); setTimeout(() => overlay.remove(), 300); }, 5000);
     }
 
+    function renderSectionNavigation(items) {
+      const nav = document.createElement('nav');
+      nav.className = 'section-navigation';
+      nav.setAttribute('aria-label', 'Zu einem Bereich springen');
+      nav.innerHTML = `
+        <span class="section-navigation-label">Springe zu:</span>
+        <div class="section-navigation-links">
+          ${items.map((item) => `<a href="#${item.id}" class="${item.attention ? 'has-attention' : ''}">${escapeHtml(item.label)}${item.badge ? `<span class="section-nav-badge">${escapeHtml(item.badge)}</span>` : ''}</a>`).join('')}
+        </div>
+      `;
+      return nav;
+    }
+
     function renderAll() {
       app.innerHTML = '';
 
@@ -4139,27 +4689,47 @@
         return;
       }
 
-      app.appendChild(renderOverview());
-      app.appendChild(renderGoalsBlock());
+      const todayTrainingProgress = getTodayTrainingProgress();
+      const navigationItems = [
+        { id: 'bereich-uebersicht', label: 'Übersicht' },
+        { id: 'bereich-ziele', label: 'Zwischenziele' },
+        { id: 'bereich-aktionen', label: 'Aktionen' },
+        { id: 'bereich-gewicht', label: 'Gewichtsverlauf', visible: Array.isArray(data.weights) && data.weights.length > 0 },
+        { id: 'bereich-tempo', label: 'Abnahmerate', visible: Array.isArray(data.weights) && data.weights.length > 1 },
+        { id: 'bereich-masse', label: 'Weitere Messungen', visible: Array.isArray(data.measurements) && data.measurements.length > 0 },
+        { id: 'bereich-trainingsplan', label: 'Trainingsplan', attention: todayTrainingProgress.open > 0, badge: todayTrainingProgress.open > 0 ? `${todayTrainingProgress.open} offen` : '' },
+        { id: 'bereich-training', label: 'Trainingshistorie' },
+        { id: 'bereich-zielhistorie', label: 'Ziel-Historie' }
+      ].filter((item) => item.visible !== false);
+      app.appendChild(renderSectionNavigation(navigationItems));
+
+      const appendSection = (element, id) => {
+        element.id = id;
+        app.appendChild(element);
+      };
+
+      appendSection(renderOverview(), 'bereich-uebersicht');
+      appendSection(renderGoalsBlock(), 'bereich-ziele');
 
       const combo = document.createElement('div');
       combo.className = 'combo-grid';
+      combo.id = 'bereich-aktionen';
       combo.appendChild(renderActions());
       combo.appendChild(renderWindowSelector());
       app.appendChild(combo);
 
       if (Array.isArray(data.weights) && data.weights.length > 0) {
-        app.appendChild(renderChart());
+        appendSection(renderChart(), 'bereich-gewicht');
       }
       if (Array.isArray(data.weights) && data.weights.length > 1) {
-        app.appendChild(renderRateChart());
+        appendSection(renderRateChart(), 'bereich-tempo');
       }
       if (Array.isArray(data.measurements) && data.measurements.length > 0) {
-        app.appendChild(renderMeasurements());
+        appendSection(renderMeasurements(), 'bereich-masse');
       }
-      app.appendChild(renderTrainingPlan());
-      app.appendChild(renderRecentTrainingEntriesBlock());
-      app.appendChild(renderGoalsHistoryBlock());
+      appendSection(renderTrainingPlan(), 'bereich-trainingsplan');
+      appendSection(renderRecentTrainingEntriesBlock(), 'bereich-training');
+      appendSection(renderGoalsHistoryBlock(), 'bereich-zielhistorie');
 
       const formModal = renderTrainingFormModal();
       if (formModal) {
@@ -4199,6 +4769,15 @@
     loadDashboardData();
 
     const passwordModal = document.getElementById('passwordModal');
+    const backToTopBtn = document.getElementById('backToTop');
+    const updateBackToTopVisibility = () => {
+      backToTopBtn?.classList.toggle('visible', window.scrollY > 320);
+    };
+    backToTopBtn?.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    window.addEventListener('scroll', updateBackToTopVisibility, { passive: true });
+    updateBackToTopVisibility();
     const openPasswordModalBtn = document.getElementById('openPasswordModal');
     const closePasswordModalBtn = document.getElementById('closePasswordModal');
     const deeplinkMenuWrap = document.getElementById('deeplinkMenuWrap');
@@ -4206,6 +4785,7 @@
     const openDeeplinkMenuBtn = document.getElementById('openDeeplinkMenu');
     const closeDeeplinkMenuBtn = document.getElementById('closeDeeplinkMenu');
     const deeplinkCreateForm = document.getElementById('deeplinkCreateForm');
+    const registrationInviteCreateForm = document.getElementById('registrationInviteCreateForm');
     const sharePictureBtn = document.getElementById('sharePictureBtn');
 
     sharePictureBtn?.addEventListener('click', () => {
@@ -4235,11 +4815,13 @@
       const formData = new FormData(deeplinkCreateForm);
       const expiresAtRaw = String(formData.get('expiresAt') || '').trim();
       const expiresAt = expiresAtRaw ? `${expiresAtRaw}:00` : '';
+      const note = String(formData.get('note') || '').trim();
 
       try {
         const response = await fetch(buildDataApiUrl(), jsonPostOptions({
           action: 'create_deeplink',
-          expiresAt
+          expiresAt,
+          note
         }));
         const result = await response.json();
         if (!response.ok || !result.ok) {
@@ -4251,6 +4833,30 @@
         await loadDashboardData();
       } catch (error) {
         window.alert(`Deeplink erstellen fehlgeschlagen: ${error.message}`);
+      }
+    });
+
+    registrationInviteCreateForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const formData = new FormData(registrationInviteCreateForm);
+      const expiresAt = String(formData.get('expiresAt') || '').trim();
+      const notice = document.getElementById('registrationInviteNotice');
+      try {
+        const response = await fetch(buildDataApiUrl(), jsonPostOptions({
+          action: 'create_registration_invite',
+          note: String(formData.get('note') || '').trim(),
+          expiresAt
+        }));
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        const url = new URL('index.php', window.location.href);
+        url.search = '';
+        url.searchParams.set('invite', result.invite.token);
+        await navigator.clipboard.writeText(url.toString());
+        if (notice) notice.textContent = 'Einladungslink wurde erzeugt und kopiert (einmalig nutzbar).';
+        registrationInviteCreateForm.reset();
+      } catch (error) {
+        if (notice) notice.textContent = `Fehler: ${error.message}`;
       }
     });
 
